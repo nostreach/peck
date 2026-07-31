@@ -46,6 +46,35 @@ Exposing a home server, self-hosted app, or anything behind NAT usually means:
 
 **Privacy**: The web server only serves static files. It never sees the npub, relay traffic, or tunneled content. The signaling is end-to-end encrypted between browser and daemon. Nostr relays carry ciphertext only.
 
+**Speed**: The connection establishes in **1–5 seconds** in the best case (relay round-trip + ICE gathering + WebRTC handshake). Once the DataChannel is open, throughput depends on the network route between browser and daemon — there is no relay in the data path.
+
+## Why peck?
+
+**Permissionless to deploy.** No domain registration, no DNS setup, no TLS certificate, no Cloudflare, no port forwarding. Generate a Nostr key, start the daemon, share the npub. That's it. The npub is the address.
+
+**Permissionless to visit.** No account, no login, no app install. Open `npub1xxx.yourdomain.com` in any modern browser — the tunnel establishes automatically.
+
+**You decide who gets in.** Built-in access control: whitelist by npub, block by IP range, restrict by country/region, or require terms-of-service acceptance. The policy engine runs in the daemon — no external service, no API to call. See [Access Control & Policy](docs/ACCESS_CONTROL.md).
+
+**IP diversity without exposing your server.** Run multiple WireGuard exit tunnels — each visitor gets routed through a different exit IP. The daemon's real IP never appears in the browser. *(Proof of concept — see limitation note below.)*
+
+**No single point of failure.** No central server routes your traffic. Nostr relays carry only the encrypted signaling handshake; once the WebRTC DataChannel is open, all traffic flows peer-to-peer. Multiple relays provide redundancy — if one goes down, the others keep the signaling alive.
+
+**DDoS-resistant by architecture.** There is no public HTTP endpoint to flood. The daemon is reachable only through Nostr DMs (which require knowing the npub and establishing a WebRTC connection first). Attackers can't trivially enumerate or overwhelm the daemon.
+
+**Self-hosted, self-controlled.** No vendor lock-in. No subscription. No proprietary protocol. The daemon runs on your hardware, the browser client is static files you serve yourself.
+
+**Censorship-resistant.** No domain to seize, no DNS to manipulate (npub-based subdomains need no DNS record). Blocking peck requires blocking Nostr relays or WebRTC entirely — both are heavy-handed measures.
+
+## Tested VPN Providers
+
+| Provider | IPv4 | IPv6 | Notes |
+|----------|------|------|-------|
+| IVPN | ⚠️ Works with limitations | ✅ Good, open | IPv4 has some NAT-related issues; IPv6 exit works well with NPTv6 1:1 |
+| Mullvad | TBD | TBD | Not yet tested |
+
+See [WireGuard Multi-Tunnel Setup](docs/WIREGUARD.md) for configuration details.
+
 ## Quick Start
 
 ### Prerequisites
