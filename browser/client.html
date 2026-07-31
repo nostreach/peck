@@ -18,6 +18,21 @@
   <meta name="color-scheme" content="dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <!--
+    Content-Security-Policy (PRIV-5 mitigation):
+    Tunneled page content executes in the same browser origin as the peck
+    client. This CSP limits the damage: tunneled scripts can run inline but
+    cannot load external resources or connect to arbitrary endpoints.
+    - default-src 'self': only load resources from this origin
+    - script-src 'self' 'unsafe-inline': allow inline scripts (peck client
+      architecture requires this — tunneled pages inject <script> tags)
+    - connect-src 'self' wss: ws:: allow WebSocket (Nostr relays) + same-origin fetch
+    - img-src 'self' data:: allow inline images from tunneled content
+    - style-src 'self' 'unsafe-inline': allow inline styles
+    Note: This CSP does NOT prevent tunneled scripts from reading cookies or
+    sessionStorage — see README "Security Model" section for the full picture.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' wss: ws:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:;">
   <title>peck</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }

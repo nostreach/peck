@@ -329,6 +329,26 @@ No runtime CDN dependencies. All cryptographic code is self-hosted.
 - **HTTP only**: The DataChannel tunnel carries HTTP. HTTPS between browser and web server is handled by the hosting layer (nginx/caddy).
 - **Single-session**: One browser tab = one tunnel. Multiple tabs each establish independent connections.
 
+## Security Model
+
+### Tunneled Content Execution
+
+**How peck renders tunneled pages**: The browser client fetches HTML over the WebRTC DataChannel and injects it into the page DOM. Scripts in the tunneled content execute **in the same browser origin** as the peck client itself. This is an architectural tradeoff — it's what makes peck work as a transparent browser-based proxy (SPAs, inline scripts, and dynamic pages all work without modification).
+
+**What this means**: A daemon operator who controls the backend can serve JavaScript that runs with full access to the peck client's browser context — including cookies and in-memory state. The daemon operator is effectively the website operator; this is the same trust model as visiting any website.
+
+**Mitigations in place**:
+- **Content-Security-Policy**: Restricts external resource loading and connections to arbitrary endpoints.
+- Peck settings are stored in cookies (cross-subdomain) and localStorage. The CSP prevents tunneled scripts from exfiltrating data to external endpoints.
+
+**Future hardening options** (not yet implemented):
+- **iframe sandbox**: Render tunneled content in a sandboxed `<iframe>` with `sandbox="allow-scripts"` (no `allow-same-origin`). The iframe runs in a null origin — no access to parent cookies or sessionStorage. Requires a `postMessage` bridge for the tunnel transport.
+- **Double-reverse-proxy**: Instead of injecting HTML into the peck client DOM, serve the tunneled content as a standalone document. The peck client acts as a transparent proxy at the HTTP level. Larger architectural change but eliminates same-origin exposure entirely.
+
+### Self-Declared Client IP
+
+The browser's public IP (resolved via STUN) is sent in the `announce` DM. This is self-declared and cannot be verified at signaling time. The daemon runs an **ICE Second Filter** — it checks the actual srflx IPs in the WebRTC SDP answer against the access-control policy. This second filter runs whenever any IP-based policy rule is active (not just when GeoIP is enabled).
+
 ## Proof of Concept — Not a Privacy Tool
 
 The WireGuard multi-tunnel feature provides **IP diversity** (preventing trivial correlation between connections), not anonymity. While all tests so far are successful and promising, anonymity behind the VPNs cannot be guaranteed. IP leaks through WebRTC, DNS, or other browser side-channels are possible and have not been exhaustively ruled out.
