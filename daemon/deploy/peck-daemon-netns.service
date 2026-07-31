@@ -16,7 +16,7 @@ ExecStartPre=+/usr/local/bin/peck-vpn-netns.sh up /etc/peck/wg/*.conf
 ExecStartPre=/bin/bash -c 'grep PECK_WG_IPS /run/peck-wg-ips > /run/peck-daemon.env 2>/dev/null || true'
 
 # ─── 3. Port forwarder: host:80 → namespace:10.200.200.2:80 ───
-ExecStartPre=+/bin/bash -c 'nohup socat TCP-LISTEN:80,fork,reuseaddr TCP:10.200.200.2:80 &'
+ExecStartPre=+/bin/bash -c 'socat TCP-LISTEN:80,fork,reuseaddr TCP:10.200.200.2:80 & echo $! > /run/peck-socat.pid'
 
 # ─── 4. Daemon inside the namespace ───
 EnvironmentFile=-/run/peck-daemon.env
@@ -26,7 +26,7 @@ ExecStart=+/usr/bin/ip netns exec peck /opt/peck/venv/bin/python /opt/peck/daemo
   --relays wss://relay.damus.io,wss://relay.primal.net
 
 # ─── Cleanup ───
-ExecStop=/usr/bin/pkill -f 'socat TCP-LISTEN:80'
+ExecStop=/bin/bash -c 'kill $(cat /run/peck-socat.pid 2>/dev/null) 2>/dev/null; rm -f /run/peck-socat.pid'
 ExecStopPost=+/usr/local/bin/peck-vpn-netns.sh down
 
 Restart=always

@@ -18,24 +18,21 @@ WG_IF="wg0"
 WG_CONFIG="${PECK_WG_CONFIG:-/etc/peck/wg0.conf}"
 RESOLV_CONF="/etc/resolv.conf.peck-vpn"
 
-# Extract config values
+# Extract config values (safe parsing — no eval)
 read_config() {
-  eval "$(awk '
-    /^\[Interface\]/ { section="interface"; next }
-    /^\[Peer\]/ { section="peer"; next }
-    /^#/ { next }
-    /^$/ { next }
-    {
-      key=$1; sub(/=.*/,"",key); gsub(/ /,"",key)
-      val=$0; sub(/^[^=]*=/,"",val); gsub(/^ +| +$/,"",val)
-      if (section=="interface" && key=="PrivateKey") print "PRIVATE_KEY=\"" val "\""
-      if (section=="interface" && key=="Address") print "WG_ADDR=\"" val "\""
-      if (section=="interface" && key=="DNS") print "WG_DNS=\"" val "\""
-      if (section=="peer" && key=="PublicKey") print "PUBLIC_KEY=\"" val "\""
-      if (section=="peer" && key=="AllowedIPs") print "ALLOWED_IPS=\"" val "\""
-      if (section=="peer" && key=="Endpoint") print "ENDPOINT=\"" val "\""
-    }
-  ' "$WG_CONFIG")"
+  while IFS='=' read -r key val; do
+    key="${key// /}"  # trim spaces
+    val="${val#"${val%%[![:space:]]*}"}"  # trim leading
+    val="${val%"${val##*[![:space:]]}"}"  # trim trailing
+    case "$key" in
+      PrivateKey) PRIVATE_KEY="$val" ;;
+      Address)    WG_ADDR="$val" ;;
+      DNS)        WG_DNS="$val" ;;
+      PublicKey)  PUBLIC_KEY="$val" ;;
+      AllowedIPs) ALLOWED_IPS="$val" ;;
+      Endpoint)   ENDPOINT="$val" ;;
+    esac
+  done < <(grep -vE '^\s*(#|$|\[)' "$WG_CONFIG")
 }
 
 # Find the endpoint IP (resolve hostname if needed)

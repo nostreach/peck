@@ -3,15 +3,27 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
-.env
-*.pid
 
-# Node
+# Secrets / configs (never commit)
+.env
+.env.*
+*.key
+*.pem
+nsec
+nsec1*
+policy.yaml
+*.mmdb
+
+# Browser client
 node_modules/
 dist/
 
-# SpecKit / internal tooling
-.specify/
+# Editor
+*.swp
+*~
+.idea/
+.vscode/
 
 # OS
 .DS_Store
+*.pid

@@ -545,8 +545,10 @@ class PeerSession:
         answer = RTCSessionDescription(sdp=sdp, type="answer")
         await self.pc.setRemoteDescription(answer)
 
-        # Spec 033: ICE second filter — check srflx IPs in remote SDP
-        if self._daemon and self._daemon.policy_engine and getattr(self._daemon, "geoip_active", False):
+        # Spec 033: ICE second filter — check srflx IPs in remote SDP.
+        # Run whenever policy has IP-based rules (not just when GeoIP is active),
+        # so that IP/CIDR-only rules are also enforced against spoofed self-declared IPs.
+        if self._daemon and self._daemon.policy_engine and self._daemon._policy_has_ip_rules():
             await self._check_remote_ice_ips(sdp)
 
     async def receive_candidate(self, candidate_str: str):
@@ -1005,7 +1007,7 @@ class PeckDaemon:
         self.peers: dict = {}
         self.http_session: Optional[aiohttp.ClientSession] = None
         # Event-id dedup set for multi-relay (spec 005)
-        self._seen_event_ids: set = set()
+        self._seen_event_ids: dict = {}  # ordered dict (FIFO) for deterministic pruning
         # Lifecycle config (spec 021)
         self.idle_timeout = idle_timeout
         self.connect_timeout = connect_timeout
@@ -1431,10 +1433,11 @@ class PeckDaemon:
             return
         if event_id in self._seen_event_ids:
             return
-        self._seen_event_ids.add(event_id)
-        # Prune at 1000 entries (keep recent 500)
+        self._seen_event_ids[event_id] = True
+        # Prune at 1000 entries (FIFO — keep most recent 500)
         if len(self._seen_event_ids) > 1000:
-            self._seen_event_ids = set(list(self._seen_event_ids)[-500:])
+            while len(self._seen_event_ids) > 500:
+                self._seen_event_ids.pop(next(iter(self._seen_event_ids)))
 
         tags_p = [t for t in event.get("tags", []) if len(t) >= 2 and t[0] == "p" and t[1] == self.pubkey]
         if not tags_p:
@@ -1454,7 +1457,7 @@ class PeckDaemon:
                 ip_pref = "both"
             log.info(
                 f"← announce from {sender[:8]} (peerId={msg['peerId'][:16]}"
-                + (f", client_ip={client_ip}" if client_ip else "")
+                + (f", client_ip={client_ip[:8]}…" if client_ip else "")
                 + (f", ip_preference={ip_pref}" if ip_pref != "both" else "")
                 + ")"
             )

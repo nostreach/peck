@@ -2047,6 +2047,13 @@
       currentRelays = relayList
       log(`Relays: ${relayList.join(', ')}`)
 
+      // Validate npub format before attempting connection
+      if (!npub || (!npub.startsWith('npub1') && !/^[0-9a-f]{64}$/i.test(npub))) {
+        setStatus('failure', npub ? truncateNpub(npub) : '—')
+        log('Error: Invalid npub format. Expected npub1... or 64-char hex.', 'log-err')
+        return
+      }
+
       try {
         tunnel = await connect({
           npub,
@@ -2111,7 +2118,14 @@
 
       } catch (err) {
         setStatus('failure', truncateNpub(npub))
-        log(`Error: ${err.message}`, 'log-err')
+        // User-friendly error messages
+        let msg = err.message
+        if (msg.includes('no relays connected') || msg.includes('relay')) {
+          msg = 'No relays connected. Check your internet connection.'
+        } else if (msg.includes('timeout') || msg.includes('Timeout')) {
+          msg = 'Daemon unreachable. The daemon may be offline or the npub is invalid.'
+        }
+        log(`Error: ${msg}`, 'log-err')
         if (diagInterval) { clearInterval(diagInterval); diagInterval = null }
         tunnel = null
         tunnelReady = false
