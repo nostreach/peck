@@ -1624,11 +1624,37 @@ class PeckDaemon:
 # ─── CLI ───────────────────────────────────────────────────────────────────
 
 def load_nsec(path: str) -> str:
+    """Load a Nostr private key from a file.
+
+    Accepts both formats:
+    - Hex (64 chars, no prefix)
+    - Bech32 (nsec1...)  — decoded to hex internally
+    """
     with open(path) as f:
         content = f.read().strip()
     if content.startswith("nsec1"):
-        raise ValueError("bech32 nsec not yet supported, use hex")
+        return _nsec_to_hex(content)
     return content
+
+
+def _nsec_to_hex(nsec: str) -> str:
+    """Decode a Nostr nsec (Bech32m) to a 32-byte hex string."""
+    if nsec.count("1") < 1:
+        raise ValueError(f"invalid nsec: no separator: {nsec[:20]}…")
+    hrp, _, data_part = nsec.rpartition("1")
+    if hrp != "nsec":
+        raise ValueError(f"invalid nsec hrp: {hrp!r} (expected 'nsec')")
+    # Reuse bech32 decoder from policy.py
+    from policy import _BECH32_CHARSET, _bech32_verify_checksum, _convertbits
+    data = [_BECH32_CHARSET.find(c) for c in data_part]
+    if any(d < 0 for d in data):
+        raise ValueError(f"invalid character in nsec: {nsec[:20]}…")
+    if not _bech32_verify_checksum(hrp, data):
+        raise ValueError(f"invalid nsec checksum: {nsec[:20]}…")
+    decoded = _convertbits(data[:-6], 5, 8, False)
+    if len(decoded) != 32:
+        raise ValueError(f"nsec decoded to {len(decoded)} bytes, expected 32")
+    return bytes(decoded).hex()
 
 
 def parse_args():

@@ -78,7 +78,7 @@ python daemon.py \
 
 The daemon prints its npub on startup. That's the public identity browsers connect to.
 
-> **Key format**: The nsec file must contain a 32-byte hex string (64 characters). Bech32 `nsec1...` format is not yet supported by the daemon.
+> **Key format**: The nsec file accepts both hex (64 chars) and bech32 (`nsec1...`) format. Both are decoded automatically.
 
 ### 2. Serve the browser client
 
