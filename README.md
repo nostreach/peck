@@ -294,6 +294,12 @@ No runtime CDN dependencies. All cryptographic code is self-hosted.
 - **HTTP only**: The DataChannel tunnel carries HTTP. HTTPS between browser and web server is handled by the hosting layer (nginx/caddy).
 - **Single-session**: One browser tab = one tunnel. Multiple tabs each establish independent connections.
 
+## Proof of Concept — Not a Privacy Tool
+
+The WireGuard multi-tunnel feature provides **IP diversity** (preventing trivial correlation between connections), not anonymity. While all tests so far are successful and promising, anonymity behind the VPNs cannot be guaranteed. IP leaks through WebRTC, DNS, or other browser side-channels are possible and have not been exhaustively ruled out.
+
+If you need genuine anonymity, rely on established methods (Tor, properly configured VPN chains, hardened browser profiles).
+
 ## Further Documentation
 
 - [WireGuard Multi-Tunnel Setup](docs/WIREGUARD.md) — IP diversity, network namespaces, multi-WG configuration
