@@ -8,7 +8,7 @@
 #   peck-vpn.sh up [config1.conf config2.conf ...]
 #   peck-vpn.sh down
 #
-# Default: ~/.config/peck/wg0.conf (single tunnel, backward compatible)
+# Default: ${PECK_WG_CONFIG:-/etc/peck/wg0.conf} (single tunnel, backward compatible)
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ up)
   shift || true
   CONFIGS=("$@")
   if [[ ${#CONFIGS[@]} -eq 0 ]]; then
-    DEFAULT="~/.config/peck/wg0.conf"
+    DEFAULT="${PECK_WG_CONFIG:-/etc/peck/wg0.conf}"
     [[ -f "$DEFAULT" ]] && CONFIGS=("$DEFAULT") || { echo "[$NETNS] ✗ no config files found" >&2; exit 1; }
   fi
 

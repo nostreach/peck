@@ -1,0 +1,18 @@
+# peck daemon — Python dependencies
+#
+# System packages required (Debian/Ubuntu):
+#   sudo apt install libavdevice-dev libavfilter-dev libavformat-dev \
+#     libavcodec-dev libavutil-dev libswscale-dev libswresample-dev libsrtp2-dev
+#
+# Install:
+#   python3 -m venv venv && source venv/bin/activate
+#   pip install -r requirements.txt
+
+aiortc>=1.6.0
+aiohttp>=3.9.0
+aioice>=2.2.0
+coincurve>=20.0.0
+pyyaml>=6.0
+
+# Optional: GeoIP support (country/region/ASN rules)
+# geoip2>=4.7.0

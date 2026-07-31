@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import secrets
 import struct
 import sys
@@ -27,7 +28,7 @@ import aioice.ice
 import coincurve
 from aiortc import RTCPeerConnection, RTCSessionDescription
 
-sys.path.insert(0, '~/peck')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from daemon import (
     get_pubkey, make_event, encode_frame, decode_frame,
     MSG_OPEN, MSG_DATA, MSG_CLOSE, MSG_RST,

@@ -15,7 +15,7 @@ set -euo pipefail
 
 NETNS="peck-vpn"
 WG_IF="wg0"
-WG_CONFIG="${PECK_WG_CONFIG:-~/.config/peck/wg0.conf}"
+WG_CONFIG="${PECK_WG_CONFIG:-/etc/peck/wg0.conf}"
 RESOLV_CONF="/etc/resolv.conf.peck-vpn"
 
 # Extract config values

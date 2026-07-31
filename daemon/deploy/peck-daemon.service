@@ -5,13 +5,24 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node ~/peck/examples/server.js \
-  --nsec-file ~/.config/peck/nsec \
-  --ports 80:http://localhost:8081 \
-  --relays wss://relay.damus.io,wss://nostr.mom,wss://relay.primal.net
+User=peck
+Group=peck
+
+# Edit paths and parameters for your setup:
+#   --nsec-file   Path to Nostr private key (hex or nsec1)
+#   --ports       External port → local backend URL
+#   --relays      Comma-separated Nostr relay URLs
+#   --wg-ips      Comma-separated WireGuard/server IPv4 addresses
+ExecStart=/opt/peck/venv/bin/python /opt/peck/daemon.py \
+  --nsec-file /etc/peck/nsec \
+  --ports 80:http://127.0.0.1:8080 \
+  --relays wss://relay.damus.io,wss://relay.primal.net \
+  --wg-ips 10.0.0.1
+
 Restart=always
 RestartSec=5
-Environment=NODE_ENV=production
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 # Logging
 StandardOutput=journal
@@ -22,4 +33,4 @@ SyslogIdentifier=peck-daemon
 MemoryMax=256M
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
