@@ -86,6 +86,12 @@ Deploy these files to your web server:
 ├── client.html
 ├── sw.js
 ├── peck-config.json          (optional)
+├── vendor/                   # @noble/* bundles (see below)
+│   ├── secp256k1.mjs
+│   ├── sha2.mjs
+│   ├── hmac.mjs
+│   ├── chacha.mjs
+│   └── utils.mjs
 └── src/
     ├── client.js
     ├── native-transport.js
@@ -94,6 +100,21 @@ Deploy these files to your web server:
     ├── wg-country-codes.js
     └── geoip-data.js
 ```
+
+**Vendored crypto bundles**: The browser client uses [@noble/secp256k1](https://github.com/paulmillr/noble-secp256k1), [@noble/hashes](https://github.com/paulmillr/noble-hashes), and [@noble/ciphers](https://github.com/paulmillr/noble-ciphers) for NIP-44 encryption. These are vendored as self-hosted `.mjs` bundles (no CDN dependency at runtime). To generate them:
+
+```bash
+npm install
+mkdir -p vendor
+# Bundle each dependency as a single .mjs file
+npx esbuild @noble/secp256k1 --bundle --format=esm --outfile=vendor/secp256k1.mjs
+npx esbuild @noble/hashes/sha2 --bundle --format=esm --outfile=vendor/sha2.mjs
+npx esbuild @noble/hashes/hmac --bundle --format=esm --outfile=vendor/hmac.mjs
+npx esbuild @noble/ciphers/chacha --bundle --format=esm --outfile=vendor/chacha.mjs
+npx esbuild @noble/hashes/utils --bundle --format=esm --outfile=vendor/utils.mjs
+```
+
+The import map in `client.html` maps `@noble/*` to `/vendor/*.mjs`. See [THIRD_PARTY.md](THIRD_PARTY.md) for license information.
 
 **Optional**: Create a `peck-config.json` to override defaults:
 
@@ -214,6 +235,8 @@ peck/
 │   ├── peck-config.example.json
 │   ├── sw.js                  # Service Worker (sub-asset tunneling)
 │   └── test-site/             # Example site for testing
+│
+├── vendor/                   # @noble/* crypto bundles (generated, see README)
 │
 ├── deploy/                    # systemd service files
 │   ├── peck-daemon.service
