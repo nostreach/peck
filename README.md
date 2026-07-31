@@ -101,6 +101,7 @@ python3 -c "import secrets; print(secrets.token_hex(32))" > ~/.config/peck/nsec
 chmod 600 ~/.config/peck/nsec
 
 # Run the daemon
+cd daemon
 python daemon.py \
   --nsec-file ~/.config/peck/nsec \
   --ports 80:http://127.0.0.1:8080 \
@@ -140,6 +141,7 @@ Deploy these files to your web server:
 **Vendored crypto bundles**: The browser client uses [@noble/secp256k1](https://github.com/paulmillr/noble-secp256k1), [@noble/hashes](https://github.com/paulmillr/noble-hashes), and [@noble/ciphers](https://github.com/paulmillr/noble-ciphers) for NIP-44 encryption. These are vendored as self-hosted `.mjs` bundles (no CDN dependency at runtime). To generate them:
 
 ```bash
+cd browser
 npm install
 mkdir -p vendor
 # Bundle each dependency as a single .mjs file
@@ -250,40 +252,42 @@ Optional policy engine for IP allow/deny, GeoIP-based region blocking, terms-of-
 
 ```
 peck/
-├── daemon.py                  # Python daemon (aiortc + aiohttp + coincurve)
-├── client.py                  # CLI test client
-├── nip44.py                   # NIP-44 v2 encryption (Python)
-├── policy.py                  # Access control policy engine
-├── policy.yaml.example        # Example policy config
-├── route_table.py             # Multi-level subdomain routing
-├── ports.py                   # Multi-port configuration
+├── daemon/                    # Python daemon (server-side)
+│   ├── daemon.py              # Main daemon (aiortc + aiohttp + coincurve)
+│   ├── client.py              # CLI test client
+│   ├── nip44.py               # NIP-44 v2 encryption (Python)
+│   ├── policy.py              # Access control policy engine
+│   ├── policy.yaml.example    # Example policy config
+│   ├── route_table.py         # Multi-level subdomain routing
+│   ├── ports.py               # Multi-port configuration
+│   ├── policy_test.py         # Policy unit tests
+│   ├── ports_test.py          # Ports unit tests
+│   ├── deploy/                # systemd service files
+│   │   ├── peck-daemon.service
+│   │   └── peck-daemon-netns.service   # Network namespace variant
+│   └── scripts/               # WireGuard / netns setup
+│       ├── peck-vpn.sh        # Multi-tunnel bootstrap
+│       └── peck-vpn-netns.sh  # Network namespace setup
 │
-├── src/                       # Browser client (ES modules)
-│   ├── client.js              # Connect, tunnel, navigate
-│   ├── native-transport.js    # NIP-44 DM signaling + WebRTC
-│   ├── nip44-browser.js       # Browser-side NIP-44 v2
-│   ├── protocol.js            # Binary stream multiplexing
-│   ├── wg-country-codes.js    # IP → country flag (geoip)
-│   └── geoip-data.js          # GeoIP database (bundled)
-│
-├── examples/
+├── browser/                   # Browser client (client-side)
 │   ├── client.html            # Full browser client (~97 KB)
-│   ├── peck-config.example.json
 │   ├── sw.js                  # Service Worker (sub-asset tunneling)
+│   ├── peck-config.example.json
+│   ├── build.mjs              # esbuild bundler
+│   ├── package.json
+│   ├── vendor/                # @noble/* crypto bundles (generated)
+│   ├── src/                   # ES module sources
+│   │   ├── client.js          # Connect, tunnel, navigate
+│   │   ├── native-transport.js# NIP-44 DM signaling + WebRTC
+│   │   ├── nip44-browser.js   # Browser-side NIP-44 v2
+│   │   ├── protocol.js        # Binary stream multiplexing
+│   │   ├── wg-country-codes.js# IP → country flag (geoip)
+│   │   └── geoip-data.js      # GeoIP database (bundled)
 │   └── test-site/             # Example site for testing
 │
-├── vendor/                   # @noble/* crypto bundles (generated, see README)
-│
-├── deploy/                    # systemd service files
-│   ├── peck-daemon.service
-│   └── peck-daemon-netns.service   # Network namespace variant
-│
-├── scripts/
-│   ├── peck-vpn.sh            # WireGuard multi-tunnel bootstrap
-│   └── peck-vpn-netns.sh      # Network namespace setup
-│
-├── build.mjs                  # esbuild bundler
-└── package.json
+└── docs/                      # Documentation
+    ├── WIREGUARD.md           # Multi-tunnel setup
+    └── ACCESS_CONTROL.md      # Policy engine
 ```
 
 ## Browser Support
