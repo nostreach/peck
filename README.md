@@ -63,8 +63,9 @@ pip install aiortc aiohttp coincurve aiohttp-websockets loguru pyyaml
 ### 1. Start the daemon
 
 ```bash
-# Generate a Nostr keypair
-python daemon.py --gen-key --nsec-file ~/.config/peck/nsec
+# Generate a Nostr private key (32-byte hex)
+python3 -c "import secrets; print(secrets.token_hex(32))" > ~/.config/peck/nsec
+chmod 600 ~/.config/peck/nsec
 
 # Run the daemon
 python daemon.py \
@@ -76,6 +77,8 @@ python daemon.py \
 ```
 
 The daemon prints its npub on startup. That's the public identity browsers connect to.
+
+> **Key format**: The nsec file must contain a 32-byte hex string (64 characters). Bech32 `nsec1...` format is not yet supported by the daemon.
 
 ### 2. Serve the browser client
 
@@ -288,6 +291,12 @@ No runtime CDN dependencies. All cryptographic code is self-hosted.
 - **No TURN relay**: If both peers are behind symmetric NAT, hole-punching may fail. A relay daemon mode (`--relay-mode`) can bridge failed connections.
 - **HTTP only**: The DataChannel tunnel carries HTTP. HTTPS between browser and web server is handled by the hosting layer (nginx/caddy).
 - **Single-session**: One browser tab = one tunnel. Multiple tabs each establish independent connections.
+
+## Further Documentation
+
+- [WireGuard Multi-Tunnel Setup](docs/WIREGUARD.md) — IP diversity, network namespaces, multi-WG configuration
+- [Access Control & Policy](docs/ACCESS_CONTROL.md) — IP filtering, GeoIP blocking, terms-of-service, audit logging
+- [Third-Party Licenses](THIRD_PARTY.md) — Dependencies and their licenses
 
 ## License
 
