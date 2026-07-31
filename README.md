@@ -4,6 +4,8 @@
 
 `peck` connects a browser directly to any server behind NAT — no TURN, no VPN, no port forwarding. WebRTC hole-punching with [Nostr](https://github.com/nostr-protocol/nostr) relays as the signaling layer. All signaling is [NIP-44](https://github.com/nostr-protocol/nips/blob/master/44.md) encrypted.
 
+![peck browser client](peck.png)
+
 > **Status**: Beta. E2E-validated in production at [dns2nostr.com](https://dns2nostr.com).
 >
 > **Try it out**: Visit [peck.dns2nostr.com](https://peck.dns2nostr.com) to see a live peck tunnel in action.
