@@ -1,0 +1,425 @@
+/* peck test-site — modernized mobile-first layout
+ *
+ * Design goals:
+ *   1. Mobile-first: looks great on phone, scales up to desktop
+ *   2. Touch-friendly: all interactive elements ≥44px height
+ *   3. App-like: no body rubber-band, dark theme, subtle motion
+ *   4. Safe-area aware (notch, home indicator)
+ *   5. Still functional: nav, links, form, fetch test all work
+ */
+
+:root {
+  /* Color palette — GitHub dark inspired, but a touch warmer */
+  --bg: #0d1117;
+  --bg-elevated: #161b22;
+  --bg-card: #161b22;
+  --bg-hover: #1f2937;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #58a6ff;
+  --accent-hover: #79b8ff;
+  --success: #3fb950;
+  --warning: #d29922;
+  --error: #f85149;
+  --code-bg: #21262d;
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas, monospace;
+
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Layout */
+  --max-width: 960px;
+  --radius: 12px;
+  --radius-sm: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html {
+  /* Allow scrolling but no rubber-band (prevent pull-to-refresh bleed-through
+     even though peck-client already blocks it). */
+  overscroll-behavior-y: contain;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  font-size: 16px; /* 16px = iOS "no zoom on input focus" threshold */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Safe-area aware: notches, home indicators. The tunneled-content
+     wrapper in peck-client already handles outer padding, but this is
+     a belt-and-suspenders for when the page is viewed standalone. */
+  padding:
+    env(safe-area-inset-top)
+    env(safe-area-inset-right)
+    env(safe-area-inset-bottom)
+    env(safe-area-inset-left);
+  min-height: 100vh;
+  /* Prevent horizontal scroll / 105%-width bug. Any element that somehow
+     exceeds viewport width (long code, unbreakable strings, 100vw mistake)
+     gets clipped at the body boundary instead of making the page draggable
+     sideways. */
+  overflow-x: hidden;
+  /* Use border-box so padding doesn't add to 100vw. Combined with the
+     wrapper's overflow-x this kills the classic "page is 8px wider than
+     viewport" mobile bug. */
+  box-sizing: border-box;
+}
+
+/* Make absolutely sure nothing escapes horizontally on mobile. iOS Safari
+   sometimes ignores overflow-x: hidden on body when a child uses 100vw.
+   This catches that case. */
+html { overflow-x: hidden; }
+
+/* ─── Layout container ─── */
+
+.container {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 var(--space-4);
+}
+
+/* ─── Hero ─── */
+
+.hero {
+  padding: var(--space-10) 0 var(--space-8);
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.hero-logo {
+  width: 72px;
+  height: 72px;
+  margin-bottom: var(--space-4);
+  /* Subtle float animation */
+  animation: float 4s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-logo { animation: none; }
+}
+
+.hero h1 {
+  font-size: clamp(1.75rem, 5vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--accent) 0%, #a371f7 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: var(--space-2);
+}
+
+.hero p {
+  color: var(--text-muted);
+  font-size: clamp(0.95rem, 2vw, 1.1rem);
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+/* ─── Nav ─── */
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--border);
+  justify-content: center;
+}
+
+nav a {
+  color: var(--accent);
+  text-decoration: none;
+  padding: var(--space-3) var(--space-4);  /* ≥44px height on mobile */
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.95rem;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  /* Touch-friendly */
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  -webkit-tap-highlight-color: transparent;
+}
+
+nav a:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+nav a:active {
+  transform: scale(0.97);
+}
+
+/* ─── Main content ─── */
+
+main {
+  padding: var(--space-6) 0;
+}
+
+main section {
+  margin-bottom: var(--space-6);
+}
+
+/* ─── Cards ─── */
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-6);
+  margin-bottom: var(--space-4);
+}
+
+.card h2 {
+  color: var(--accent);
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.card h2::before {
+  content: '';
+  width: 4px;
+  height: 18px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.card p {
+  margin-bottom: var(--space-2);
+  color: var(--text);
+}
+
+.card p:last-child { margin-bottom: 0; }
+
+.card code {
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  color: #f0883e;
+}
+
+/* ─── Live clock (JS test) ─── */
+
+#clock {
+  font-family: var(--font-mono);
+  font-size: 1.3rem;
+  color: var(--success);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Buttons ─── */
+
+button,
+.btn {
+  background: var(--success);
+  color: white;
+  border: none;
+  padding: var(--space-3) var(--space-5);  /* ≥44px */
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 500;
+  font-family: inherit;
+  min-height: 44px;
+  transition: background 0.15s, transform 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:hover,
+.btn:hover { background: #46c466; }
+
+button:active,
+.btn:active { transform: scale(0.97); }
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ─── Fetch result display ─── */
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  overflow-x: auto;
+  margin-top: var(--space-3);
+  white-space: pre-wrap;
+  word-break: break-all;
+  /* Cap width so long lines don't push the container wider than viewport. */
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* ─── Forms ─── */
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+label {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+input[type="text"],
+input[type="email"],
+textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 16px;  /* iOS no-zoom threshold */
+  min-height: 44px;
+  transition: border-color 0.15s;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input[type="text"]:focus,
+input[type="email"]:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+}
+
+textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+/* ─── Image test ─── */
+
+.img-test {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.img-test img {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+/* ─── Expand/collapse for long content ─── */
+
+details {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-6);
+  margin-bottom: var(--space-4);
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--accent);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  -webkit-tap-highlight-color: transparent;
+  list-style: none;
+}
+
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: '▸';
+  margin-right: var(--space-2);
+  transition: transform 0.2s;
+  display: inline-block;
+}
+
+details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+details p {
+  margin-top: var(--space-3);
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.7;
+}
+
+/* ─── Footer ─── */
+
+footer {
+  padding: var(--space-8) 0 var(--space-10);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-6);
+}
+
+footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+footer a:hover { text-decoration: underline; }
+
+/* ─── Responsive tweaks ─── */
+
+@media (min-width: 768px) {
+  .container { padding: 0 var(--space-6); }
+  .hero { padding: var(--space-10) 0; }
+  nav a {
+    padding: var(--space-2) var(--space-5);
+    min-height: 40px;
+  }
+}
+
+/* ─── Reduced motion ─── */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

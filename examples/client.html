@@ -1,0 +1,2172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!--
+    Mobile setup:
+    - viewport-fit=cover: extend into notch/home-indicator areas
+    - maximum-scale=1.0 + user-scalable=no: zoom lock. This is controversial
+      for accessibility, but essential for peck — zoom-out + pull-down at
+      the top triggers a native browser reload, which tears down the
+      WebRTC tunnel and forces a new hole punch. Locking zoom kills that
+      attack surface entirely.
+    - For users who need zoom we can revisit via a settings toggle later.
+  -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <!-- Color the browser chrome (Safari address bar, Android status bar) -->
+  <meta name="theme-color" content="#0d1117">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>peck</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      overflow: hidden;
+      /* Mobile: disable pull-to-refresh and rubber-band scrolling.
+         Without this, zooming out and pulling down at the top of the
+         page reloads the browser — which tears down the WebRTC tunnel
+         and forces a new hole punch. overscroll-behavior covers most
+         modern browsers; the touchstart handler below covers iOS Safari. */
+      overscroll-behavior-y: contain;
+      /* touch-action: manipulation kills the 300ms tap delay on mobile
+         without allowing pinch-zoom (which we disabled in the viewport
+         meta anyway). Combined with user-scalable=no this is belt+suspenders. */
+      touch-action: manipulation;
+      /* Respect notches/home indicators on iPhone X+. */
+      padding:
+        env(safe-area-inset-top)
+        env(safe-area-inset-right)
+        env(safe-area-inset-bottom)
+        env(safe-area-inset-left);
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+    }
+
+    /* ─── Header Bar (glassmorphism, single 44px line) ─── */
+    #peck-header {
+      position: fixed;
+      top: env(safe-area-inset-top, 0);
+      left: 0; right: 0;
+      height: 44px;  /* 44px = iOS/Android recommended touch target */
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0 0.75rem;
+      background: rgba(13,17,23,0.85);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid #30363d;
+      font-size: 14px;
+      z-index: 100000;
+    }
+    #status-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      flex-shrink: 0; transition: background 0.2s;
+    }
+    #status-dot.connecting { background: #d29922; animation: pulse 1.2s ease-in-out infinite; }
+    #status-dot.connected  { background: #3fb950; box-shadow: 0 0 8px currentColor; }
+    #status-dot.failure    { background: #f85149; }
+    @keyframes pulse { 0%,100% { transform: scale(1); opacity: 0.6; } 50% { transform: scale(1.3); opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) {
+      #status-dot.connecting { animation: none; }
+    }
+    #npub-display {
+      font-family: monospace; color: #8b949e;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #header-diag {
+      font-family: monospace; font-size: 11px; color: #3fb950;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      flex: 1; min-width: 0;
+    }
+    #info-toggle {
+      margin-left: auto; color: #8b949e; background: none;
+      border: none; cursor: pointer; font-size: 16px;
+      font-family: inherit; padding: 4px 6px; border-radius: 4px;
+      flex-shrink: 0;
+    }
+    #info-toggle:hover { color: #c9d1d9; background: #21262d; }
+    #settings-toggle {
+      color: #8b949e; background: none;
+      border: none; cursor: pointer; font-size: 16px;
+      font-family: inherit; padding: 4px 6px; border-radius: 4px;
+      flex-shrink: 0;
+    }
+    #settings-toggle:hover { color: #c9d1d9; background: #21262d; }
+
+    /* Show header diagnostics only on wide screens */
+    @media (max-width: 900px) {
+      #header-diag { display: none; }
+    }
+
+    /* ─── Relay Pills + Exit IP Chips (inside settings panel) ─── */
+    #peck-relays {
+      display: flex; flex-wrap: wrap; gap: 4px;
+    }
+    .relay-pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 6px; font-size: 11px;
+      font-family: monospace;
+    }
+    .relay-pill.connected {
+      border: 1px solid #3fb950; color: #3fb950; background: rgba(63,185,80,0.1);
+    }
+    .relay-pill.failed {
+      border: 1px solid #f85149; color: #f85149; background: rgba(248,81,73,0.1);
+    }
+    .relay-list { display: flex; flex-direction: column; gap: 4px; }
+    .relay-item {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .relay-item input {
+      flex: 1; padding: 3px 8px; background: #161b22;
+      border: 1px solid #30363d; border-radius: 4px;
+      color: #c9d1d9; font-family: monospace; font-size: 12px;
+    }
+    .relay-btn {
+      width: 26px; height: 26px; border: 1px solid #30363d;
+      border-radius: 6px; background: #21262d; color: #c9d1d9;
+      cursor: pointer; font-size: 14px; font-weight: 600;
+      line-height: 1; flex-shrink: 0; display: flex;
+      align-items: center; justify-content: center;
+    }
+    .relay-btn:hover { background: #30363d; }
+    .relay-status-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .ip-list {
+      display: flex; flex-direction: column; gap: 3px;
+      min-width: 0;  /* allow flex children to shrink below content size */
+    }
+    .ip-row {
+      display: flex; align-items: center; gap: 6px;
+      padding: 3px 8px; border-radius: 6px; font-size: 12px;
+      font-family: monospace;
+      overflow: hidden;
+      min-width: 0;  /* prevent row from expanding beyond container */
+    }
+    .ip-row .ip-text {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1;
+    }
+    .ip-row.connected {
+      background: rgba(63,185,80,0.12); border: 1px solid rgba(63,185,80,0.4);
+      font-weight: 600;
+    }
+    .ip-row.global {
+      background: rgba(255,255,255,0.04); border: 1px solid #30363d;
+    }
+    .ip-row.local {
+      background: transparent; border: 1px solid #21262d; color: #6e7681;
+    }
+    .ip-row .ip-type {
+      font-size: 10px; color: #6e7681; margin-left: auto; flex-shrink: 0;
+    }
+    .ipver-badge {
+      font-size: 10px; padding: 1px 6px; border-radius: 4px;
+      background: rgba(95,150,255,0.15); color: #58a6ff;
+      border: 1px solid rgba(95,150,255,0.3); margin-top: 4px;
+    }
+
+    /* ─── Settings Panel (slide-in from right) ─── */
+    #peck-settings {
+      position: fixed;
+      top: 0; right: 0;
+      width: 320px; height: 100%;
+      transform: translateX(100%);
+      transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+      z-index: 100001;
+    }
+    #peck-settings.open { transform: translateX(0); }
+    #peck-settings-backdrop {
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: rgba(0,0,0,0.4);
+      opacity: 0; pointer-events: none; transition: opacity 0.25s;
+      z-index: 1;
+    }
+    #peck-settings.open #peck-settings-backdrop {
+      opacity: 1; pointer-events: auto;
+    }
+    #peck-settings-content {
+      position: relative;
+      z-index: 2;
+      background: rgba(22,27,34,0.95);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      width: 320px; height: 100%;
+      overflow-y: auto;
+      padding: 0.75rem;
+      display: flex; flex-direction: column; gap: 0.75rem;
+      border-left: 1px solid #30363d;
+      box-shadow: -4px 0 20px rgba(0,0,0,0.4);
+    }
+    #peck-resize-handle {
+      position: absolute;
+      top: 0; left: 0;
+      width: 4px; height: 100%;
+      cursor: col-resize;
+      background: transparent;
+      z-index: 3;
+    }
+    #peck-resize-handle:hover, #peck-resize-handle.dragging {
+      background: #f59e0b;
+    }
+    .settings-header {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .settings-header h3 { font-size: 16px; color: #c9d1d9; }
+    #settings-close {
+      color: #8b949e; background: none; border: none; cursor: pointer;
+      font-size: 16px; padding: 4px 8px; border-radius: 4px;
+    }
+    #settings-close:hover { color: #c9d1d9; background: #21262d; }
+    .settings-section {
+      display: flex; flex-direction: column; gap: 0.5rem;
+      padding-bottom: 0.75rem; border-bottom: 1px solid #21262d;
+      min-width: 0;  /* allow IP rows to shrink within */
+    }
+    .settings-section:last-child { border-bottom: none; }
+    .settings-label {
+      font-size: 11px; color: #6e7681; text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .settings-row {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 13px; color: #c9d1d9;
+    }
+    .settings-hint { font-size: 11px; color: #6e7681; }
+    .settings-btn {
+      padding: 4px 12px; background: #21262d; border: 1px solid #30363d;
+      border-radius: 4px; color: #c9d1d9; cursor: pointer;
+      font-size: 12px; font-family: inherit;
+    }
+    .settings-btn:hover { background: #30363d; }
+    /* Toggle slider */
+    .toggle {
+      position: relative; width: 44px; height: 24px; background: #30363d;
+      border-radius: 12px; cursor: pointer; transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    .toggle.on { background: #f59e0b; }
+    .toggle::after {
+      content: ''; position: absolute; top: 2px; left: 2px;
+      width: 20px; height: 20px; background: #fff; border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle.on::after { transform: translateX(20px); }
+    /* Segmented control */
+    .seg-control {
+      display: inline-flex; border: 1px solid #30363d;
+      border-radius: 6px; overflow: hidden;
+    }
+    .seg-control button {
+      padding: 6px 14px; background: transparent; border: none;
+      color: #8b949e; font-size: 12px; cursor: pointer;
+    }
+    .seg-control button.active {
+      background: #f59e0b; color: #0d1117; font-weight: 600;
+    }
+    .seg-control button:disabled { opacity: 0.3; cursor: not-allowed; }
+    /* Debug rows (reused in Connection section) */
+    .debug-row { display: flex; gap: 0.5rem; align-items: center; }
+    .debug-row label {
+      font-size: 11px; color: #6e7681; width: 40px;
+      flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .debug-row input {
+      flex: 1; padding: 4px 8px; background: #161b22;
+      border: 1px solid #30363d; border-radius: 4px;
+      color: #c9d1d9; font-family: monospace; font-size: 12px;
+    }
+    .debug-row input:focus { outline: none; border-color: #1f6feb; }
+    #btn-reconnect {
+      padding: 4px 12px; background: #21262d; border: 1px solid #30363d;
+      border-radius: 4px; color: #c9d1d9; cursor: pointer;
+      font-size: 12px; font-family: inherit;
+    }
+    #btn-reconnect:hover { background: #30363d; }
+    #log {
+      background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+      padding: 6px 8px; font-family: monospace; font-size: 11px;
+      height: 140px; overflow-y: auto; white-space: pre-wrap;
+      word-break: break-all; color: #8b949e;
+    }
+    #log .log-ok { color: #3fb950; }
+    #log .log-err { color: #f85149; }
+    #diag {
+      font-size: 11px; color: #888; padding: 4px 12px;
+      word-break: break-all; font-family: monospace;
+    }
+    #advanced-toggle {
+      background: none; border: none; color: #6e7681; cursor: pointer;
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 0; font-family: inherit;
+    }
+    #advanced-toggle:hover { color: #c9d1d9; }
+
+    /* ─── Tunneled Content ─── */
+    #tunneled-content {
+      /* Offset by header height + safe-area-top (notch/status bar). */
+      margin-top: calc(env(safe-area-inset-top, 0) + 44px);
+      /* Leave room for bottom home indicator on iPhone X+. */
+      margin-bottom: env(safe-area-inset-bottom, 0);
+      width: 100%;
+      height: calc(100% - env(safe-area-inset-top, 0) - 44px - env(safe-area-inset-bottom, 0));
+      /* Vertical scroll OK, horizontal scroll locked. This is the key
+         fix for the "105% width / draggable sideways" mobile bug —
+         tunneled content that's wider than viewport gets clipped rather
+         than extending the page horizontally. */
+      overflow-x: hidden;
+      overflow-y: auto;
+      /* Allow the tunneled page to scroll but not rubber-band (which
+         would otherwise propagate to the host and trigger pull-to-refresh
+         on browsers that ignore overscroll-behavior on parent). */
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      /* pan-x pan-y allows scrolling in both directions, disables pinch-zoom
+         even if viewport meta is somehow ignored. */
+      touch-action: pan-x pan-y;
+    }
+
+    /* ─── Loading Bar ─── */
+    #peck-loading-bar {
+      position: fixed;
+      top: calc(env(safe-area-inset-top, 0) + 44px); left: 0; right: 0;
+      height: 2px;
+      z-index: 100001;
+      pointer-events: none;
+    }
+    #peck-loading-fill {
+      height: 100%;
+      width: 0;
+      background: #58a6ff;
+      opacity: 0;
+      box-shadow: 0 0 8px rgba(88, 166, 255, 0.5);
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "@noble/secp256k1": "/vendor/secp256k1.mjs",
+      "@noble/hashes/utils.js": "/vendor/utils.mjs",
+      "@noble/hashes/sha2.js": "/vendor/sha2.mjs",
+      "@noble/hashes/hmac.js": "/vendor/hmac.mjs",
+      "@noble/ciphers/chacha.js": "/vendor/chacha.mjs"
+    }
+  }
+  </script>
+</head>
+<body>
+
+  <div id="peck-header">
+    <span id="status-dot" class="connecting"></span>
+    <span id="npub-display">initializing…</span>
+    <span id="header-diag"></span>
+    <button id="info-toggle" title="What is peck?">ⓘ</button>
+    <button id="settings-toggle">⚙</button>
+  </div>
+
+  <div id="peck-loading-bar"><div id="peck-loading-fill"></div></div>
+
+  <div id="peck-settings">
+    <div id="peck-settings-content">
+      <div id="peck-resize-handle"></div>
+      <div class="settings-header">
+        <h3>Settings</h3>
+        <button id="settings-close">✕</button>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">Connection</div>
+        <div class="debug-row"><label>npub</label><input type="text" id="debug-npub" spellcheck="false" autocomplete="off"></div>
+        <input type="hidden" id="debug-relay" value="wss://relay.damus.io, wss://relay.primal.net, wss://relay.nostr.net, wss://nostr.oxtr.dev, wss://no.str.cr">
+        <button id="btn-reconnect" class="settings-btn">Reconnect</button>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-row">
+          <span>Auto-Reconnect</span>
+          <div class="seg-control" id="reconnect-control">
+            <button data-val="off">Off</button>
+            <button data-val="on">On</button>
+            <button data-val="smart" class="active">Smart</button>
+          </div>
+        </div>
+        <div class="settings-hint" id="reconnect-hint">No automatic reconnect on disconnect</div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">Relays</div>
+        <div id="peck-relays" class="relay-list"></div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">Own IPs</div>
+        <div id="peck-own-ips" class="ip-list"></div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">Peer IPs</div>
+        <div id="peck-exits" class="ip-list"></div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">IP Version</div>
+        <div class="seg-control" id="ip-version-control">
+          <button data-val="ipv4">IPv4</button>
+          <button data-val="ipv6">IPv6</button>
+          <button data-val="both" class="active">Both</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label">Terms</div>
+        <div class="settings-row">
+          <span>Auto-accept terms</span>
+          <div id="toggle-auto-accept" class="toggle"></div>
+        </div>
+        <div class="settings-hint" id="terms-version-hint">No terms accepted yet</div>
+      </div>
+
+      <div class="settings-section">
+        <div class="settings-label"><button id="advanced-toggle">▸ Advanced</button></div>
+        <div id="diag"></div>
+        <div id="log"></div>
+      </div>
+    </div>
+    <div id="peck-settings-backdrop"></div>
+  </div>
+
+  <div id="tunneled-content"></div>
+
+  <script type="module">
+    import { connect, formatDiagnostics } from '../src/client.js?v=20260730t'
+    // NativeTransport is the default in client.js now — no _transport needed.
+    // We import it only so it gets loaded for debugging in the console.
+    import { NativeTransport } from '../src/native-transport.js?v=20260730t'
+    import { lookupCountry, ccToFlag, getCachedCountry, _whenGeoipReady } from '../src/wg-country-codes.js?v=20260730t'
+
+    // Expose for debugging
+    window.NativeTransport = NativeTransport
+
+    let tunnel = null
+    let tunnelReady = false   // false during connect(), true once peer connected
+    let diagInterval = null
+    let currentPath = '/'  // track for reconnect restore
+
+    // Spec 034: Enhanced Connection UI state
+    let relayStates = {}  // {url: 'connected' | 'failed' | 'closed'}
+    let daemonExitIPs = []  // [{ip, cc, flag}]
+    let daemonIpVersions = { v4: false, v6: false }
+    let settingsOpen = false
+    let ownExitIPs = []
+    let ownIpVersions = { v4: false, v6: false }
+
+    const $ = id => document.getElementById(id)
+
+    // Root domain for generic info text (e.g. "dns2nostr.com" from "npub1abc.dns2nostr.com")
+    const SITE_DOMAIN = location.hostname.split('.').slice(-2).join('.')
+
+    // ─── Spec 037: Server Config ───
+    const PECK_DEFAULTS = {
+      default_relays: [
+        'wss://relay.damus.io',
+        'wss://relay.primal.net',
+        'wss://relay.nostr.net',
+        'wss://nostr.oxtr.dev',
+        'wss://no.str.cr'
+      ],
+      reconnect: {
+        max_attempts: 3,
+        delays_ms: [5000, 10000, 20000]
+      },
+      ice_gathering_timeout_ms: 3000,
+      info_mandatory: 'never'
+    }
+    let PECK_CONFIG = { ...PECK_DEFAULTS }
+
+    async function loadServerConfig() {
+      try {
+        const resp = await fetch('peck-config.json', { cache: 'no-store' })
+        if (!resp.ok) return
+        const data = await resp.json()
+        PECK_CONFIG = {
+          ...PECK_DEFAULTS,
+          ...data,
+          reconnect: { ...PECK_DEFAULTS.reconnect, ...(data.reconnect || {}) }
+        }
+      } catch (e) {
+        // 404, malformed JSON, network error — silent fallback to defaults
+      }
+    }
+
+    function needsInfoGate() {
+      const mode = PECK_CONFIG.info_mandatory
+      if (mode === 'always') return true
+      if (mode === 'npub') {
+        const sub = location.hostname.split('.')[0] || ''
+        return sub.startsWith('npub1')
+      }
+      return false
+    }
+
+    function showMandatoryGate() {
+      return new Promise(resolve => {
+        const overlay = document.createElement('div')
+        overlay.id = 'info-gate'
+        overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10001;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);'
+
+        const modal = document.createElement('div')
+        modal.style.cssText = 'background:rgba(13,17,23,0.95);color:#e6edf3;border-radius:12px;padding:24px 28px;max-width:680px;width:90vw;max-height:95vh;overflow-y:auto;font-family:system-ui,sans-serif;font-size:14px;line-height:1.5;border:1px solid #30363d;box-shadow:0 24px 48px rgba(0,0,0,0.5);'
+
+        modal.innerHTML = `
+          <div style="margin-bottom:20px;">
+            <h3 style="margin:0;color:#f59e0b;font-size:20px;font-family:system-ui,sans-serif;">What is peck?</h3>
+          </div>
+          <p style="margin:0 0 16px;color:#c9d1d9;">
+            <strong>peck</strong> is a browser-based WebRTC tunnel. It connects your browser directly to a remote server (daemon) via Nostr relays, creating an encrypted peer-to-peer tunnel. All web traffic — pages, images, scripts — flows through this direct connection.
+          </p>
+          <h4 style="margin:0 0 8px;color:#f59e0b;font-size:15px;">Privacy & Responsibility</h4>
+          <ul style="margin:0 0 16px;padding-left:20px;color:#c9d1d9;">
+            <li style="margin-bottom:6px;">A <strong>direct P2P connection</strong> is opened to the daemon's server IPs (visible in Settings → Peer IPs).</li>
+            <li style="margin-bottom:6px;">The P2P connection is negotiated entirely in your browser via Nostr relays. <strong>${SITE_DOMAIN} does not know who you connect to</strong> — the npub, relay handshake, and WebRTC signaling all happen client-side. No information about the connection flows back to ${SITE_DOMAIN}.</li>
+            <li style="margin-bottom:6px;"><strong>${SITE_DOMAIN}</strong> only serves the peck client (HTML/JS). It does <strong>not</strong> route, see, or log the content you access through the tunnel.</li>
+            <li style="margin-bottom:6px;">The content displayed comes entirely from the <strong>daemon operator</strong>. ${SITE_DOMAIN} has no knowledge of or control over it.</li>
+            <li>The daemon operator is solely responsible for all content served through the tunnel.</li>
+          </ul>
+          <h4 style="margin:0 0 8px;color:#f59e0b;font-size:15px;">How to Use</h4>
+          <ol style="margin:0 0 16px;padding-left:20px;color:#c9d1d9;">
+            <li style="margin-bottom:4px;">The page auto-connects on load if an npub is in the URL.</li>
+            <li style="margin-bottom:4px;">Wait for the status indicator to turn <span style="color:#3fb950;">green</span> (Connected).</li>
+            <li style="margin-bottom:4px;">The tunneled content appears below the header bar.</li>
+            <li style="margin-bottom:4px;">Click links to navigate — the URL updates without reloading the page.</li>
+            <li style="margin-bottom:4px;">Open Settings (⚙) to view connection details, relays, and peer IPs.</li>
+            <li>To disconnect: close the tab, or use Settings → Reconnect to reset.</li>
+          </ol>
+          <div style="border-top:1px solid #21262d;padding-top:16px;display:flex;flex-direction:column;align-items:center;gap:12px;">
+            <p style="margin:0;color:#8b949e;font-size:12px;text-align:center;">
+              By using peck, you acknowledge that a direct P2P connection is established and that ${SITE_DOMAIN} is not responsible for the content accessed through the tunnel.
+            </p>
+            <button id="gate-accept" style="padding:10px 28px;background:#238636;color:#fff;border:1px solid #2ea043;border-radius:8px;cursor:pointer;font-size:14px;font-family:system-ui,sans-serif;font-weight:600;">I understand</button>
+          </div>
+        `
+
+        overlay.appendChild(modal)
+        document.body.appendChild(overlay)
+
+        modal.querySelector('#gate-accept').onclick = () => {
+          localStorage.setItem('peck-info-accepted', 'true')
+          overlay.remove()
+          resolve()
+        }
+      })
+    }
+
+    // ─── Settings Store (Cookie + localStorage sync) ───
+    // Settings are stored in a cookie on the root domain so they are shared
+    // across all subdomains (each npub1xxx.example.com is a different origin).
+    // localStorage is used as a fast local cache; the cookie is the source of
+    // truth on page load. sessionStorage settings are NOT synced (per-tab).
+    const PECK_SETTINGS = ['peck_reconnect_mode', 'peck_ip_preference', 'peck_auto_accept_terms', 'peck_accepted_terms_version', 'peck_relays']
+
+    function peckGetSetting(key, fallback) {
+      // 1. Try cookie (cross-subdomain)
+      const cookieVal = document.cookie
+        .split('; ')
+        .find(c => c.startsWith(key + '='))
+      if (cookieVal) return decodeURIComponent(cookieVal.split('=').slice(1).join('='))
+      // 2. Fallback to localStorage
+      const lsVal = localStorage.getItem(key)
+      if (lsVal !== null) return lsVal
+      // 3. Fallback to default
+      return fallback
+    }
+
+    function peckSetSetting(key, value) {
+      // Write to cookie on root domain (cross-subdomain), 1 year, SameSite=Lax
+      const domain = '.' + SITE_DOMAIN
+      const cookieOpts = `domain=${domain};`
+      document.cookie = `${key}=${encodeURIComponent(value)};${cookieOpts}max-age=31536000;path=/;SameSite=Lax`
+      // Also write to localStorage for fast access
+      localStorage.setItem(key, value)
+    }
+
+    function peckRemoveSetting(key) {
+      const domain = '.' + SITE_DOMAIN
+      const cookieOpts = `domain=${domain};`
+      document.cookie = `${key}=;${cookieOpts}max-age=0;path=/;SameSite=Lax`
+      localStorage.removeItem(key)
+    }
+
+    // Migrate existing localStorage values to cookies on first load
+    function peckMigrateSettings() {
+      for (const key of PECK_SETTINGS) {
+        const lsVal = localStorage.getItem(key)
+        if (lsVal !== null) {
+          // Check if cookie already has it
+          const cookieVal = document.cookie
+            .split('; ')
+            .find(c => c.startsWith(key + '='))
+          if (!cookieVal) {
+            peckSetSetting(key, lsVal)
+          }
+        }
+      }
+    }
+    peckMigrateSettings()
+
+    const dot = $('status-dot')
+    const npubDisplay = $('npub-display')
+    const headerDiag = $('header-diag')
+    const debugToggle = $('settings-toggle')
+    const debugPanel = $('peck-settings')
+    const diagLine = $('diag')
+    const debugNpub = $('debug-npub')
+    const debugRelay = $('debug-relay')
+    // Restore saved relays from cookie/localStorage (cross-subdomain)
+    {
+      const savedRelays = peckGetSetting('peck_relays')
+      if (savedRelays) debugRelay.value = savedRelays
+    }
+    const logEl = $('log')
+    const contentEl = $('tunneled-content')
+
+    // Spec 034: new DOM references for enhanced UI
+    const settingsToggle = $('settings-toggle')
+    const settingsPanel = $('peck-settings')
+    const settingsClose = $('settings-close')
+    const settingsBackdrop = $('peck-settings-backdrop')
+    const relayContainer = $('peck-relays')
+    const exitContainer = $('peck-exits')
+    const toggleAutoAccept = $('toggle-auto-accept')
+    const ipVersionControl = $('ip-version-control')
+    const termsVersionHint = $('terms-version-hint')
+    const advancedToggle = $('advanced-toggle')
+    const ownIpContainer = $('peck-own-ips')
+    const resizeHandle = $('peck-resize-handle')
+    const reconnectControl = $('reconnect-control')
+    const reconnectHint = $('reconnect-hint')
+
+    // ─── Spec 036: Info Overlay ───
+    const infoToggle = $('info-toggle')
+    infoToggle.addEventListener('click', () => {
+      // Don't open if already open
+      if ($('info-overlay')) return
+
+      const overlay = document.createElement('div')
+      overlay.id = 'info-overlay'
+      overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:10000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);'
+
+      const modal = document.createElement('div')
+      modal.style.cssText = 'background:rgba(13,17,23,0.95);color:#e6edf3;border-radius:12px;padding:28px;max-width:560px;max-height:80vh;overflow-y:auto;font-family:system-ui,sans-serif;font-size:14px;line-height:1.6;border:1px solid #30363d;box-shadow:0 24px 48px rgba(0,0,0,0.5);'
+
+      modal.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+          <h3 style="margin:0;color:#f59e0b;font-size:20px;font-family:system-ui,sans-serif;">What is peck?</h3>
+          <button id="info-close" style="background:none;border:none;color:#8b949e;font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px;">✕</button>
+        </div>
+
+        <p style="margin:0 0 16px;color:#c9d1d9;">
+          <strong>peck</strong> is a browser-based WebRTC tunnel. It connects your browser directly to a remote server (daemon) via Nostr relays, creating an encrypted peer-to-peer tunnel. All web traffic — pages, images, scripts — flows through this direct connection.
+        </p>
+
+        <h4 style="margin:0 0 8px;color:#f59e0b;font-size:15px;">Privacy & Responsibility</h4>
+        <ul style="margin:0 0 16px;padding-left:20px;color:#c9d1d9;">
+          <li style="margin-bottom:6px;">A <strong>direct P2P connection</strong> is opened to the daemon's server IPs (visible in Settings → Peer IPs).</li>
+          <li style="margin-bottom:6px;">The P2P connection is negotiated entirely in your browser via Nostr relays. <strong>${SITE_DOMAIN} does not know who you connect to</strong> — the npub, relay handshake, and WebRTC signaling all happen client-side. No information about the connection flows back to ${SITE_DOMAIN}.</li>
+          <li style="margin-bottom:6px;"><strong>${SITE_DOMAIN}</strong> only serves the peck client (HTML/JS). It does <strong>not</strong> route, see, or log the content you access through the tunnel.</li>
+          <li style="margin-bottom:6px;">The content displayed comes entirely from the <strong>daemon operator</strong>. ${SITE_DOMAIN} has no knowledge of or control over it.</li>
+          <li>The daemon operator is solely responsible for all content served through the tunnel.</li>
+        </ul>
+
+        <h4 style="margin:0 0 8px;color:#f59e0b;font-size:15px;">How to Use</h4>
+        <ol style="margin:0 0 16px;padding-left:20px;color:#c9d1d9;">
+          <li style="margin-bottom:4px;">The page auto-connects on load if an npub is in the URL.</li>
+          <li style="margin-bottom:4px;">Wait for the status indicator to turn <span style="color:#3fb950;">green</span> (Connected).</li>
+          <li style="margin-bottom:4px;">The tunneled content appears below the header bar.</li>
+          <li style="margin-bottom:4px;">Click links to navigate — the URL updates without reloading the page.</li>
+          <li style="margin-bottom:4px;">Open Settings (⚙) to view connection details, relays, and peer IPs.</li>
+          <li>To disconnect: close the tab, or use Settings → Reconnect to reset.</li>
+        </ol>
+
+        <p style="margin:0;color:#8b949e;font-size:12px;border-top:1px solid #21262d;padding-top:12px;">
+          By using peck, you acknowledge that a direct P2P connection is established and that ${SITE_DOMAIN} is not responsible for the content accessed through the tunnel.
+        </p>
+      `
+
+      overlay.appendChild(modal)
+      document.body.appendChild(overlay)
+
+      // Close handlers
+      const closeInfo = () => overlay.remove()
+      modal.querySelector('#info-close').onclick = closeInfo
+      overlay.addEventListener('click', e => { if (e.target === overlay) closeInfo() })
+      document.addEventListener('keydown', function escClose(e) {
+        if (e.key === 'Escape') { closeInfo(); document.removeEventListener('keydown', escClose) }
+      })
+    })
+
+    function setStatus(state, text) {
+      dot.className = state
+      npubDisplay.textContent = text
+    }
+
+    function log(msg, cls = '') {
+      const time = new Date().toLocaleTimeString('en-US', { hour12: false })
+      const line = document.createElement('div')
+      if (cls) line.className = cls
+      line.textContent = `[${time}] ${msg}`
+      logEl.appendChild(line)
+      logEl.scrollTop = logEl.scrollHeight
+    }
+
+    function truncateNpub(npub) { return npub.slice(0, 20) + '…' }
+
+    // ─── bech32m encode (hex → npub) ───────────────────────────────
+    // Needed because dns2nostr TXT records contain hex pubkeys, but peck
+    // signaling needs bech32 (npub1...). Inverse of the decode in client.js.
+    const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
+    const BECH32M_CONST = 0x2bc830a3
+
+    function bech32Polymod(values) {
+      const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+      let chk = 1
+      for (const v of values) {
+        let top = chk >> 25
+        chk = ((chk & 0x1ffffff) << 5) ^ v
+        for (let i = 0; i < 5; i++) {
+          if (((top >> i) & 1) !== 0) chk ^= GEN[i]
+        }
+      }
+      return chk
+    }
+
+    function bech32HRPExpand(hrp) {
+      const ret = []
+      for (let i = 0; i < hrp.length; i++) ret.push(hrp.charCodeAt(i) >> 5)
+      ret.push(0)
+      for (let i = 0; i < hrp.length; i++) ret.push(hrp.charCodeAt(i) & 31)
+      return ret
+    }
+
+    function bech32Encode(hrp, data) {
+      const values = bech32HRPExpand(hrp).concat(data)
+      const polymod = bech32Polymod(values.concat([0,0,0,0,0,0])) ^ BECH32M_CONST
+      const checksum = []
+      for (let i = 0; i < 6; i++) {
+        checksum.push((polymod >> 5 * (5 - i)) & 31)
+      }
+      return hrp + '1' + data.concat(checksum).map(v => BECH32_CHARSET[v]).join('')
+    }
+
+    function convertBitsEncode(data, fromBits, toBits, pad) {
+      let acc = 0
+      let bits = 0
+      const ret = []
+      const maxv = (1 << toBits) - 1
+      const maxAcc = (1 << (fromBits + toBits - 1)) - 1
+      for (const v of data) {
+        acc = ((acc << fromBits) | v) & maxAcc
+        bits += fromBits
+        while (bits >= toBits) {
+          bits -= toBits
+          ret.push((acc >> bits) & maxv)
+        }
+      }
+      if (pad && bits > 0) {
+        ret.push((acc << (toBits - bits)) & maxv)
+      }
+      return ret
+    }
+
+    /**
+     * Convert a 32-byte hex pubkey to bech32 npub format.
+     * "7941f6aa..." → "npub1..."
+     */
+    function hexToNpub(hex) {
+      const bytes = []
+      for (let i = 0; i < hex.length; i += 2) {
+        bytes.push(parseInt(hex.substr(i, 2), 16))
+      }
+      const data5 = convertBitsEncode(bytes, 8, 5, true)
+      return bech32Encode('npub', data5)
+    }
+
+    /**
+     * DoH TXT lookup — tries multiple resolvers for resilience.
+     * Google first, then Cloudflare as fallback.
+     * Returns the npub hex from the TXT record, or null.
+     */
+    const DOH_ENDPOINTS = [
+      'https://dns.google/resolve',
+      'https://cloudflare-dns.com/dns-query',
+    ]
+
+    async function resolveNpubViaDoH(hostname) {
+      for (const endpoint of DOH_ENDPOINTS) {
+        try {
+          const resp = await fetch(endpoint + '?name=' +
+            encodeURIComponent(hostname) + '&type=TXT',
+            { headers: { 'Accept': 'application/dns-json' } })
+          if (!resp.ok) continue
+          const data = await resp.json()
+          if (data.Status !== 0 || !data.Answer) continue
+          for (const a of data.Answer) {
+            if (a.type !== 16) continue  // TXT
+            const txt = a.data.replace(/^"|\"$/g, '')
+            const match = txt.match(/npub=([0-9a-f]{64})/i)
+            if (match) return match[1]
+          }
+        } catch (e) {
+          log('DoH ' + endpoint + ' failed: ' + e.message, 'log-err')
+        }
+      }
+      return null
+    }
+
+    async function resolveNpub() {
+      const hostname = window.location.hostname
+
+      // Hostname layout: [sub.]CONTEXT.<root-domain>
+      // where CONTEXT is npub1... or an alias (daniel, nostreach, ...).
+      const labels = hostname.split('.').reverse()  // [tld, domain, ctx, sub, ...]
+
+      // Check if hostname ends with the SITE_DOMAIN (derived from current hostname)
+      // context is the label directly before the root domain
+      const rootLabels = SITE_DOMAIN.split('.').reverse()  // [tld, domain]
+      if (labels.length >= rootLabels.length + 1) {
+        const isRootMatch = rootLabels.every((rl, i) => labels[i] === rl)
+        if (isRootMatch) {
+          const ctx = labels[rootLabels.length]
+          if (ctx && ctx.length > 0 && ctx !== 'www') {
+            // Primary: npub directly in URL — zero DNS footprint
+            if (ctx.startsWith('npub1')) {
+              return ctx
+            }
+            // Fallback: alias → DoH TXT lookup (discovery path)
+            log('Resolving "' + ctx + '" via DoH…')
+            const hexPubkey = await resolveNpubViaDoH(hostname)
+            if (hexPubkey) {
+              const npub = hexToNpub(hexPubkey)
+              log('Resolved: ' + ctx + ' → ' + truncateNpub(npub))
+              return npub
+            }
+            log('DoH: no TXT record for ' + hostname, 'log-err')
+            return null
+          }
+        }
+      }
+
+      // Fallback 1: ?npub= query parameter (test/dev mode)
+      const params = new URLSearchParams(window.location.search)
+      const queryNpub = params.get('npub')
+      if (queryNpub) return queryNpub
+
+      // Fallback 2: sessionStorage (survives reload after pushState dropped ?npub=)
+      const stored = sessionStorage.getItem('peck-npub')
+      if (stored) return stored
+
+      return null
+    }
+
+    /**
+     * True if the npub comes from the subdomain (npub1....<root-domain>)
+     * rather than from ?npub= query param or manual entry. When true,
+     * we DON'T need to append ?npub= to tunnel URLs because the subdomain
+     * survives navigations within the same origin.
+     */
+    function npubFromSubdomain() {
+      const hostname = window.location.hostname
+      const labels = hostname.split('.').reverse()
+      const rootLabels = SITE_DOMAIN.split('.').reverse()
+      if (labels.length >= rootLabels.length + 1) {
+        const isRootMatch = rootLabels.every((rl, i) => labels[i] === rl)
+        if (isRootMatch && labels[rootLabels.length] &&
+            labels[rootLabels.length] !== 'www' &&
+            labels[rootLabels.length].length > 0) {
+          return true
+        }
+      }
+      return false
+    }
+
+    /** Build a URL that preserves ?npub= across navigations.
+     *  Only appends ?npub= when the npub comes from manual entry (?npub= or
+     *  sessionStorage). When the npub is encoded in the subdomain, the
+     *  subdomain survives navigations and ?npub= is redundant. */
+    function tunneledUrl(path) {
+      if (npubFromSubdomain()) return path  // subdomain is the carrier
+      const npub = sessionStorage.getItem('peck-npub')
+      const sep = path.includes('?') ? '&' : '?'
+      return npub ? `${path}${sep}npub=${npub}` : path
+    }
+
+    // Spec 034: Settings panel (slide-in from right) replaces old debug toggle
+    function openSettings() { settingsPanel.classList.add('open'); settingsOpen = true }
+    function closeSettings() { settingsPanel.classList.remove('open'); settingsOpen = false }
+    settingsToggle.addEventListener('click', openSettings)
+    settingsClose.addEventListener('click', closeSettings)
+    settingsBackdrop.addEventListener('click', closeSettings)
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && settingsOpen) closeSettings() })
+
+    // Spec 034: resizable settings panel
+    let resizing = false
+    resizeHandle.addEventListener('mousedown', e => {
+      e.preventDefault()
+      resizing = true
+      resizeHandle.classList.add('dragging')
+      document.body.style.userSelect = 'none'
+    })
+    document.addEventListener('mousemove', e => {
+      if (!resizing) return
+      const w = window.innerWidth - e.clientX
+      const clamped = Math.max(240, Math.min(600, w))
+      settingsPanel.style.width = clamped + 'px'
+      const content = $('peck-settings-content')
+      if (content) content.style.width = clamped + 'px'
+    })
+    document.addEventListener('mouseup', () => {
+      if (resizing) {
+        resizing = false
+        resizeHandle.classList.remove('dragging')
+        document.body.style.userSelect = ''
+      }
+    })
+
+    // Spec 034: auto-accept terms toggle
+    function updateAutoAcceptToggle() {
+      const enabled = peckGetSetting('peck_auto_accept_terms') === 'true'
+      toggleAutoAccept.classList.toggle('on', enabled)
+      const version = peckGetSetting('peck_accepted_terms_version') || ''
+      termsVersionHint.textContent = enabled && version ? `Auto-accepting v${version}` : 'No terms accepted yet'
+    }
+    toggleAutoAccept.addEventListener('click', () => {
+      const enabling = peckGetSetting('peck_auto_accept_terms') !== 'true'
+      peckSetSetting('peck_auto_accept_terms', enabling ? 'true' : 'false')
+      if (!enabling) peckRemoveSetting('peck_accepted_terms_version')
+      updateAutoAcceptToggle()
+    })
+    updateAutoAcceptToggle()
+
+    // Spec 034: IP version segmented control
+    function updateIpVersionControl() {
+      const pref = peckGetSetting('peck_ip_preference') || 'both'
+      ipVersionControl.querySelectorAll('button').forEach(btn => {
+        const val = btn.dataset.val
+        btn.classList.toggle('active', val === pref)
+        // Disable versions not supported by daemon
+        if (val === 'ipv4' && !daemonIpVersions.v4) btn.disabled = true
+        else if (val === 'ipv6' && !daemonIpVersions.v6) btn.disabled = true
+        else btn.disabled = false
+      })
+    }
+    ipVersionControl.addEventListener('click', e => {
+      const btn = e.target.closest('button')
+      if (!btn || btn.disabled) return
+      peckSetSetting('peck_ip_preference', btn.dataset.val)
+      updateIpVersionControl()
+    })
+    updateIpVersionControl()
+
+    // Spec 034: relay list rendering with +/- buttons
+    function renderRelayPills() {
+      const relayStr = debugRelay.value.trim()
+      // Keep empty rows — don't filter(Boolean), they are newly added blank rows.
+      let urls = relayStr ? relayStr.split(',').map(s => s.trim()) : []
+      // Dedup consecutive trailing empties (from "a, b, , " patterns)
+      while (urls.length > 1 && urls[urls.length - 1] === '' && urls[urls.length - 2] === '') urls.pop()
+      if (!urls.length) urls = ['']
+      // Show + always, but click handler checks before adding empty row
+      const hasEmptyRow = urls.includes('')
+      relayContainer.innerHTML = urls.map((url) => {
+        const state = relayStates[url]
+        const dotStyle = state === 'connected' ? 'background:#3fb950' : state === 'failed' ? 'background:#f85149' : 'background:#6e7681'
+        return `<div class="relay-item">
+          <span class="relay-status-dot" style="${dotStyle}"></span>
+          <input type="text" class="relay-url-input" value="${url}" placeholder="wss://..." spellcheck="false">
+          ${urls.length > 1 ? '<button class="relay-btn relay-remove" type="button">−</button>' : ''}
+          <button class="relay-btn relay-add" type="button">+</button>
+        </div>`
+      }).join('')
+    }
+
+    // Event delegation for relay +/− buttons
+    relayContainer.addEventListener('click', e => {
+      const btn = e.target.closest('.relay-btn')
+      if (!btn) return
+      if (btn.classList.contains('relay-add')) {
+        // Read current values from inputs (keep filled ones)
+        const currentUrls = Array.from(relayContainer.querySelectorAll('.relay-url-input'))
+          .map(i => i.value.trim())
+        // Only add empty row if none exists yet
+        if (currentUrls.includes('')) {
+          // Focus existing empty row instead of adding another
+          const emptyInput = Array.from(relayContainer.querySelectorAll('.relay-url-input'))
+            .find(i => !i.value.trim())
+          emptyInput?.focus()
+          return
+        }
+        currentUrls.push('')
+        debugRelay.value = currentUrls.join(', ')
+        peckSetSetting('peck_relays', debugRelay.value)
+        renderRelayPills()
+        const inputs = relayContainer.querySelectorAll('.relay-url-input')
+        inputs[inputs.length - 1]?.focus()
+      } else if (btn.classList.contains('relay-remove')) {
+        const row = btn.closest('.relay-item')
+        const input = row?.querySelector('.relay-url-input')
+        if (input) input.value = ''
+        const urls = Array.from(relayContainer.querySelectorAll('.relay-url-input'))
+          .map(i => i.value.trim()).filter(Boolean)
+        debugRelay.value = urls.join(', ')
+        peckSetSetting('peck_relays', debugRelay.value)
+        renderRelayPills()
+      }
+    })
+
+    // Spec 034: relay list — persist to cookie for cross-subdomain sharing
+    relayContainer.addEventListener('change', () => {
+      const urls = Array.from(relayContainer.querySelectorAll('.relay-url-input'))
+        .map(i => i.value.trim()).filter(Boolean)
+      debugRelay.value = urls.join(', ')
+      peckSetSetting('peck_relays', urls.join(', '))
+    })
+
+    // Spec 034: exit IP chip rendering
+    function classifyIp(ip) {
+      // Skip link-local, loopback, and Chrome mDNS (.local hostnames)
+      if (ip.startsWith('169.254.') || ip === '::1') return 'skip'
+      if (ip.endsWith('.local') || !ip.includes('.')) {
+        // mDNS hostnames like "abc123.local" — Chrome privacy obfuscation
+        if (!ip.match(/^\d+\.\d+\.\d+\.\d+$/) && !ip.includes(':')) return 'skip'
+      }
+      if (ip.startsWith('10.') || ip.startsWith('172.') || ip.startsWith('192.168.') || ip.startsWith('fd') || ip.startsWith('fe80')) return 'local'
+      return 'global'
+    }
+
+    function renderIpList(container, ips, versions) {
+      if (!ips.length) { container.innerHTML = '<div style="color:#6e7681;font-size:11px">—</div>'; return }
+      // Sort: connected first, then global, then local
+      const sorted = [...ips].sort((a, b) => {
+        const rank = ip => ip.connected ? 0 : ip.class === 'global' ? 1 : 2
+        return rank(a) - rank(b)
+      })
+      // Update flags — lazy load geoip-data.js on first call
+      let needRerender = false
+      sorted.forEach(e => {
+        if (!e.cc) {
+          const cc = lookupCountry(e.ip)
+          if (cc) { e.cc = cc; e.flag = ccToFlag(cc) }
+          else needRerender = true
+        }
+      })
+      container.innerHTML = sorted.map(({ip, flag, cc, label, connected, cls}) => {
+        const rowClass = connected ? 'ip-row connected' : `ip-row ${cls || 'global'}`
+        const typeLabel = connected ? '◆ selected' : label || ''
+        return `<div class="${rowClass}">${flag} <span class="ip-text">${ip}</span>${typeLabel ? `<span class="ip-type">${typeLabel}</span>` : ''}</div>`
+      }).join('')
+      // Add IP version badge
+      let badge = ''
+      if (versions.v4 && versions.v6) badge = '<span class="ipver-badge">IPv4+IPv6</span>'
+      else if (versions.v4) badge = '<span class="ipver-badge">IPv4</span>'
+      else if (versions.v6) badge = '<span class="ipver-badge">IPv6</span>'
+      container.innerHTML += badge
+      // If geoip-data.js was still loading, re-render after it finishes
+      if (needRerender && !window._geoipRerenderScheduled) {
+        window._geoipRerenderScheduled = true
+        // Promise-based: wait for geoip data, then re-render
+        _whenGeoipReady().then(() => {
+          if (ownExitIPs.length) renderIpList(ownIpContainer, ownExitIPs, ownIpVersions)
+          if (daemonExitIPs.length) renderIpList(exitContainer, daemonExitIPs, daemonIpVersions)
+        }).catch(() => {})
+      }
+    }
+
+    // Spec 034: parse offer SDP to extract exit IPs from ICE candidates
+    // Host candidates carry the internal WG IP (172.x), srflx candidates
+    // carry the public exit IP. We show both for leak detection.
+    function parseOfferSdp(sdp) {
+      const ips = []
+      let hasV4 = false, hasV6 = false
+      for (const line of sdp.split('\n')) {
+        if (!line.startsWith('a=candidate')) continue
+        const parts = line.split(' ')
+        if (parts.length < 8) continue
+        const ip = parts[4]
+        const typeIdx = parts.indexOf('typ') + 1
+        const candType = typeIdx > 0 ? parts[typeIdx] : 'host'
+        if (candType === 'relay') continue
+        const cls = classifyIp(ip)
+        if (cls === 'skip') continue
+        if (ip.includes(':')) hasV6 = true
+        else if (ip.match(/^\d+\.\d+\.\d+\.\d+$/)) hasV4 = true
+        const cc = lookupCountry(ip)
+        const flag = cc ? ccToFlag(cc) : '❓'
+        const label = candType === 'srflx' ? 'srflx' : candType === 'host' ? 'host' : ''
+        if (!ips.find(e => e.ip === ip)) ips.push({ ip, flag, cc, label, connected: false, cls })
+      }
+      daemonExitIPs = ips
+      daemonIpVersions = { v4: hasV4, v6: hasV6 }
+      renderIpList(exitContainer, daemonExitIPs, daemonIpVersions)
+      updateIpVersionControl()
+      log(`Peer IPs from offer: ${ips.map(i => i.flag + ' ' + i.ip).join(', ')}`)
+    }
+
+    function parseAnswerSdp(sdp) {
+      const ips = []
+      let hasV4 = false, hasV6 = false
+      for (const line of sdp.split('\n')) {
+        if (!line.startsWith('a=candidate')) continue
+        const parts = line.split(' ')
+        if (parts.length < 8) continue
+        const ip = parts[4]
+        const typeIdx = parts.indexOf('typ') + 1
+        const candType = typeIdx > 0 ? parts[typeIdx] : 'host'
+        if (candType === 'relay') continue
+        const cls = classifyIp(ip)
+        if (cls === 'skip') continue
+        if (ip.includes(':')) hasV6 = true
+        else if (ip.match(/^\d+\.\d+\.\d+\.\d+$/)) hasV4 = true
+        const cc = lookupCountry(ip)
+        const flag = cc ? ccToFlag(cc) : '❓'
+        const label = candType === 'srflx' ? 'srflx' : candType === 'host' ? 'host' : ''
+        if (!ips.find(e => e.ip === ip)) ips.push({ ip, flag, cc, label, connected: false, cls })
+      }
+      ownExitIPs = ips
+      ownIpVersions = { v4: hasV4, v6: hasV6 }
+      renderIpList(ownIpContainer, ownExitIPs, ownIpVersions)
+      log(`Own IPs from answer: ${ips.map(i => i.flag + ' ' + i.ip).join(', ')}`)
+    }
+
+    // Spec 034: STUN-resolved own IPs (bypasses mDNS obfuscation in
+    // Chrome/Firefox). These are the real srflx IPs that STUN servers see.
+    // Rebuilds the full list on every call so IP changes are reflected immediately.
+    function handleOwnIpsFromStun(stunIps) {
+      if (!stunIps || !stunIps.length) return
+      const newIPs = []
+      const newVersions = { v4: false, v6: false }
+      const newExitSet = new Set()
+      for (const ip of stunIps) {
+        const cls = classifyIp(ip)
+        if (cls === 'skip' || cls === 'local') continue
+        newExitSet.add(ip)
+        // Preserve flag/connected status if we already have this IP
+        const existing = ownExitIPs.find(e => e.ip === ip)
+        if (existing) {
+          newIPs.push(existing)
+        } else {
+          const cc = lookupCountry(ip)
+          const flag = cc ? ccToFlag(cc) : '❓'
+          newIPs.push({ ip, flag, cc, label: 'srflx', connected: false, cls: 'global' })
+        }
+        if (ip.includes(':')) newVersions.v6 = true
+        else if (ip.match(/^\d+\.\d+\.\d+\.\d+$/)) newVersions.v4 = true
+      }
+      // Replace the full list so removed IPs disappear
+      ownExitIPs = newIPs
+      ownIpVersions = newVersions
+      lastKnownExitIPs = newExitSet
+      renderIpList(ownIpContainer, ownExitIPs, ownIpVersions)
+      log(`Own IPs from STUN: ${stunIps.join(', ')}`)
+    }
+
+    // Spec 034: advanced section toggle (show/hide diag + log)
+    advancedToggle.addEventListener('click', () => {
+      const log_el = $('log')
+      const diag_el = $('diag')
+      const open = log_el.style.display !== 'none'
+      log_el.style.display = open ? 'none' : 'block'
+      diag_el.style.display = open ? 'none' : 'block'
+      advancedToggle.textContent = open ? '▸ Advanced' : '▾ Advanced'
+    })
+    // Start hidden
+    $('log').style.display = 'none'
+    $('diag').style.display = 'none'
+
+    $('btn-reconnect').addEventListener('click', () => {
+      const npub = debugNpub.value.trim()
+      const relay = debugRelay.value.trim() || 'wss://nos.lol'
+      if (!npub) { log('Enter an npub first', 'log-err'); return }
+      startConnection(npub, relay)
+    })
+
+    // ─── Service Worker (handles sub-assets: CSS, JS, images) ───
+
+    async function setupServiceWorker() {
+      if (!('serviceWorker' in navigator)) return null
+      try {
+        const reg = await navigator.serviceWorker.register('/sw.js')
+        log('Service Worker registered')
+        // Force update check to get latest version
+        await reg.update()
+
+        // Wait for active SW (handles update scenario)
+        if (reg.active) return reg.active
+        await new Promise(resolve => {
+          const check = () => reg.active ? resolve() : setTimeout(check, 100)
+          check()
+        })
+        return reg.active
+      } catch (err) {
+        log(`SW registration failed: ${err.message}`, 'log-err')
+        return null
+      }
+    }
+
+    // Clean up SW tunnel port when page unloads (reload, close, navigate away)
+    // This prevents the next page load from hanging on a stale tunnel reference.
+    window.addEventListener('beforeunload', () => {
+      try {
+        if (navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({ type: 'UNREGISTER' })
+        }
+      } catch {}
+    })
+
+    function connectServiceWorker(sw) {
+      return new Promise((resolve) => {
+        const channel = new MessageChannel()
+        const swPort = channel.port1
+        const swRemotePort = channel.port2
+
+        swPort.onmessage = async (event) => {
+          const msg = event.data
+          if (msg?.type === 'REGISTERED') {
+            log('SW ↔ tunnel channel established')
+            resolve()
+            return
+          }
+          if (msg?.type === 'TUNNEL_REQUEST') {
+            try {
+              // Spec 029: parse /_p<port>/ from request path, fall back to
+              // currentPort (whatever the page is on), then defaultPort.
+              const swParsed = parsePortPrefix(msg.path)
+              const swPort = swParsed.port || currentPort || defaultPort
+              const swPath = swParsed.path
+              const res = await tunnel.request({
+                port: swPort,
+                method: msg.method,
+                path: swPath,
+                headers: msg.headers,
+                body: msg.body ? new Uint8Array(msg.body) : null
+              })
+              const headers = {}
+              for (const [k, v] of Object.entries(res.headers)) headers[k] = v
+              swPort.postMessage({ id: msg.id, status: res.status, headers, body: Array.from(res.body) })
+            } catch (err) {
+              swPort.postMessage({ id: msg.id, error: err.message })
+            }
+          }
+        }
+
+        sw.postMessage({ type: 'REGISTER' }, [swRemotePort])
+        setTimeout(() => resolve(), 3000)
+      })
+    }
+
+    // ─── Navigation (fetch through tunnel, render in-page) ───
+
+    // Loading bar element (now declared in HTML, just grab a reference)
+    const loadingBar = $('peck-loading-bar')
+
+    let loadingTimer = null
+
+    function showLoading() {
+      const fill = document.getElementById('peck-loading-fill')
+      fill.style.width = '10%'
+      fill.style.opacity = '1'
+      fill.style.transition = 'width 0.4s ease'
+      // Animate to 90% over time (never 100% until done)
+      setTimeout(() => { fill.style.width = '40%' }, 100)
+      setTimeout(() => { fill.style.width = '70%' }, 500)
+      clearTimeout(loadingTimer)
+      loadingTimer = setTimeout(() => {
+        fill.style.width = '90%'
+        fill.style.transition = 'width 2s ease'
+      }, 1000)
+    }
+
+    function hideLoading() {
+      clearTimeout(loadingTimer)
+      const fill = document.getElementById('peck-loading-fill')
+      fill.style.transition = 'width 0.1s ease, opacity 0.2s ease 0.1s'
+      fill.style.width = '100%'
+      fill.style.opacity = '0'
+    }
+
+    // ─── Spec 029: Path-Prefix Multi-Port ────────────────────────────────
+    // Extracts the /_p<port>/ prefix from a path. Returns {port, path}.
+    // If no prefix is present, port is null (caller falls back to default).
+    // Examples:
+    //   /                  → {port: null, path: '/'}
+    //   /foo               → {port: null, path: '/foo'}
+    //   /_p9090/           → {port: 9090, path: '/'}
+    //   /_p9090/invoices   → {port: 9090, path: '/invoices'}
+    function parsePortPrefix(path) {
+      const m = path.match(/^\/_p(\d{1,5})(\/.*)?$/)
+      if (!m) return { port: null, path }
+      const port = parseInt(m[1], 10)
+      if (port < 1 || port > 65535) return { port: null, path }  // invalid → treat as normal path
+      const rest = m[2] || '/'
+      return { port, path: rest }
+    }
+
+    // Builds a /_p<port>/ URL from a relative path and the current port context.
+    // If currentPort is null or the daemon's default, the prefix is omitted (clean URL).
+    // If currentPort is set and non-default, the prefix is prepended.
+    function buildPortPath(targetPath, port = currentPort) {
+      if (!targetPath.startsWith('/')) targetPath = '/' + targetPath
+      // If targetPath already has a port prefix, leave it alone
+      if (/^\/_p\d{1,5}\//.test(targetPath) || /^\/_p\d{1,5}$/.test(targetPath)) {
+        return targetPath
+      }
+      if (port && port !== defaultPort) {
+        return `/_p${port}${targetPath === '/' ? '/' : targetPath}`
+      }
+      return targetPath
+    }
+
+    // Tracks the port context for the current page. Set on navigate(),
+    // used by fetch override + form/link intercepts.
+    let currentPort = null     // null = default
+    let defaultPort = 80       // updated when daemon reports its default_port (future)
+    // For now, we don't know the daemon's default_port. Treat 80 as default.
+    // If the path has no /_p prefix, currentPort stays null (default).
+
+    async function navigate(path, redirectHops = 0) {
+      currentPath = path  // track for reconnect restore
+      if (!tunnel || tunnel.isClosed) {
+        log('Tunnel disconnected — cannot navigate', 'log-err')
+        return
+      }
+      if (redirectHops > 5) {
+        log('Too many redirects (>5) — aborting', 'log-err')
+        hideLoading()
+        return
+      }
+      showLoading()
+      log(`Navigating to ${path}…`)
+
+      // Spec 029: parse /_p<port>/ prefix from path
+      const parsed = parsePortPrefix(path)
+      const wirePort = parsed.port || defaultPort
+      const backendPath = parsed.path
+      // Pin currentPort for subsequent fetches/forms on this page
+      if (parsed.port !== null) {
+        currentPort = parsed.port
+      } else {
+        currentPort = null  // default
+      }
+
+      try {
+        const res = await tunnel.request({ port: wirePort, method: 'GET', path: backendPath })
+        log(`Response: ${res.status} (${res.body.length} bytes)`, res.status < 400 ? 'log-ok' : 'log-err')
+
+        // Follow 3xx redirects (max 5 hops to prevent loops)
+        if (res.status >= 300 && res.status < 400) {
+          const location = res.headers['location'] || res.headers['Location']
+          if (location) {
+            // Spec 029 FR-008: rewrite relative Location to preserve port context
+            let target
+            if (location.startsWith('http://') || location.startsWith('https://')) {
+              // Absolute URL — pass through only if same-origin, else follow as-is
+              const locUrl = new URL(location, window.location.origin)
+              if (locUrl.origin === window.location.origin) {
+                target = locUrl.pathname + locUrl.search
+              } else {
+                // Cross-origin redirect — open in top window
+                log(`Cross-origin redirect → ${location}`)
+                window.location.href = location
+                return
+              }
+            } else {
+              // Relative Location — resolve against current path, preserve port
+              const resolved = new URL(location, window.location.origin + path).pathname + (new URL(location, window.location.origin + path).search || '')
+              // Prepend current port prefix if we're in a non-default port context
+              target = buildPortPath(resolved, currentPort)
+            }
+            log(`Redirect ${res.status} → ${target}`)
+            return navigate(target, redirectHops + 1)
+          }
+        }
+
+        const html = new TextDecoder().decode(res.body)
+
+        // Update URL bar without page reload (preserve ?npub= for reload)
+        history.pushState({ tunneled: true }, '', tunneledUrl(path))
+
+        // Parse the HTML properly — innerHTML on a div strips <html>, <head>, <link> etc.
+        const doc = new DOMParser().parseFromString(html, 'text/html')
+
+        // First: set body content (clears everything from previous navigation)
+        contentEl.innerHTML = doc.body.innerHTML
+
+        // Then: fetch and inject CSS from <head> via tunnel (prepend so body styles win)
+        for (const link of doc.querySelectorAll('link[rel="stylesheet"]')) {
+          const href = link.getAttribute('href')
+          if (!href || href.startsWith('http')) continue
+          try {
+            // Spec 029: resolve CSS href against backendPath (prefix-stripped)
+            // not the original URL-path, otherwise /_p8082/assets/style.css
+            // gets sent as the literal path to the backend.
+            const cssUrl = new URL(href, window.location.origin + backendPath)
+            const cssRes = await tunnel.request({ port: currentPort || defaultPort, method: 'GET', path: cssUrl.pathname })
+            // Rewrite CSS selectors to scope under #tunneled-content so they
+            // don't leak into the peck host UI. The old approach (only body→#tunneled-content)
+            // let `header`, `nav`, `main`, `footer` rules hit the peck host's
+            // own elements and produced broken layouts.
+            let cssText = new TextDecoder().decode(cssRes.body)
+            // Scope universal selectors first (before we mangle the bare tag names)
+            cssText = cssText.replace(/^(\s*)\*/gm, '$1#tunneled-content *')
+            // Bare tag selectors that conflict with peck host UI → scope them.
+            // Only match selectors that start at line, comma, brace, or whitespace
+            // boundaries — NOT inside compound selectors like .card-header.
+            const scopeTags = ['html', 'body', 'header', 'nav', 'main', 'footer', 'section', 'article', 'aside']
+            for (const tag of scopeTags) {
+              // (^|[,>+~\s]) tag (\s*[,{>+~])
+              const re = new RegExp(`(^|[,>+~\\s])${tag}(?=[\\s,>+~{])`, 'gm')
+              cssText = cssText.replace(re, '$1#tunneled-content')
+            }
+            // Scope remaining bare element selectors (button, input, a, h1-h6, p,
+            // table, img, etc.) that would leak into peck UI. We prepend
+            // #tunneled-content to any selector that is a bare tag name at the
+            // start of a selector list, so `button { ... }` becomes
+            // `#tunneled-content button { ... }`.
+            const bareTags = ['a','b','bdi','bdo','blockquote','br','button','caption','cite','code','col','colgroup','dd','del','details','dfn','dialog','dl','dt','em','fieldset','figcaption','figure','form','h1','h2','h3','h4','h5','h6','hr','i','iframe','img','input','ins','kbd','label','legend','li','mark','menu','ol','optgroup','option','output','p','pre','progress','q','samp','select','small','span','strong','sub','summary','sup','table','tbody','td','textarea','tfoot','th','thead','time','tr','u','ul','var','video']
+            for (const tag of bareTags) {
+              // Match bare tag as first selector in a rule or after comma
+              cssText = cssText.replace(new RegExp(`(^|[},\\s])${tag}(?=[\\s.,:>+~{[])`, 'gm'), '$1#tunneled-content ' + tag)
+            }
+            const style = document.createElement('style')
+            style.textContent = cssText
+            contentEl.insertBefore(style, contentEl.firstChild)
+          } catch (err) {
+            log(`CSS load error (${href}): ${err.message}`, 'log-err')
+          }
+        }
+
+        // Execute scripts — innerHTML doesn't run them, we need to re-create.
+        // Each script is wrapped in an IIFE to give it a fresh scope.
+        // Without this, `const`/`let` from the first run collide on re-execution
+        // (e.g. navigating back to home) → SyntaxError → script silently fails.
+        for (const oldScript of [...contentEl.querySelectorAll('script')]) {
+          const newScript = document.createElement('script')
+          const src = oldScript.getAttribute('src')
+          if (src && !src.startsWith('http')) {
+            try {
+              const jsUrl = new URL(src, window.location.origin + backendPath)
+              const jsRes = await tunnel.request({ port: currentPort || defaultPort, method: 'GET', path: jsUrl.pathname })
+              newScript.textContent = `(function(){\n${new TextDecoder().decode(jsRes.body)}\n})()`
+            } catch (err) {
+              log(`JS load error (${src}): ${err.message}`, 'log-err')
+              continue
+            }
+          } else if (src) {
+            newScript.src = src
+          } else {
+            newScript.textContent = `(function(){\n${oldScript.textContent}\n})()`
+          }
+          oldScript.replaceWith(newScript)
+        }
+
+        // ─── Spec-perf-fix: fetch() override for tunneled content ──────
+        // Apps that use relative fetch() (e.g. fetch('./api/time')) would
+        // otherwise hit the peck host URL and get HTML back instead of the
+        // API response. Patch window.fetch to route relative URLs through
+        // the tunnel. Absolute URLs (http://, https://) are left alone.
+        // Spec 029: also parse /_p<port>/ from relative URLs.
+        if (!window.__peckFetchPatched) {
+          window.__peckFetchPatched = true
+          const origFetch = window.fetch.bind(window)
+          window.fetch = async (input, init) => {
+            const url = typeof input === 'string' ? input : input.url
+            // Only intercept relative URLs (path or ./ or ../, no scheme)
+            if (/^(https?:|blob:|data:)/i.test(url)) {
+              return origFetch(input, init)
+            }
+            try {
+              const resolved = new URL(url, window.location.origin + (window.__peckCurrentPath || '/'))
+              // Spec 029: check for /_p<port>/ prefix in the URL
+              const parsed = parsePortPrefix(resolved.pathname)
+              const wirePort = parsed.port || currentPort || defaultPort
+              const opts = {
+                port: wirePort,
+                method: (init && init.method) || 'GET',
+                path: parsed.path + resolved.search,
+                headers: (init && init.headers) || {},
+                body: (init && init.body) ? (typeof init.body === 'string' ? new TextEncoder().encode(init.body) : init.body) : null,
+              }
+              const res = await window.peck.request(opts)
+              const ab = res.body.buffer.slice(res.body.byteOffset, res.body.byteOffset + res.body.byteLength)
+              return new Response(ab, {
+                status: res.status,
+                headers: res.headers,
+              })
+            } catch (err) {
+              throw new TypeError(`peck tunnel fetch failed: ${err.message}`)
+            }
+          }
+        }
+        window.__peckCurrentPath = path
+
+        // Resolve images via tunnel
+        for (const img of contentEl.querySelectorAll('img[src]')) {
+          const src = img.getAttribute('src')
+          if (!src || src.startsWith('http') || src.startsWith('data:')) continue
+          try {
+            const imgUrl = new URL(src, window.location.origin + backendPath)
+            const imgRes = await tunnel.request({ port: currentPort || defaultPort, method: 'GET', path: imgUrl.pathname })
+            const blob = new Blob([imgRes.body], { type: imgRes.headers['content-type'] || 'image/png' })
+            img.src = URL.createObjectURL(blob)
+          } catch {}
+        }
+
+        // Wire up links for SPA-style navigation
+        contentEl.querySelectorAll('a').forEach(linkIntercept)
+
+        // Wire up forms
+        contentEl.querySelectorAll('form').forEach(formIntercept)
+
+        // Expose window.peck API so tunneled apps can reach other backend ports.
+        // Usage: const res = await window.peck.request({ port: 3000, path: '/api/users' })
+        window.peck = {
+          request: (opts) => tunnel.request(opts),
+          get isClosed() { return tunnel?.isClosed ?? true }
+        }
+
+        hideLoading()
+        log('Page rendered')
+      } catch (err) {
+        hideLoading()
+        log(`Navigation error: ${err.message}`, 'log-err')
+      }
+    }
+
+    // Intercept link clicks → navigate through tunnel instead of page reload
+    function linkIntercept(a) {
+      const href = a.getAttribute('href')
+      if (!href || href.startsWith('http') || href.startsWith('mailto:') || href.startsWith('#')) {
+        // External links / anchors: let browser handle
+        if (href && href.startsWith('http') && !href.includes(window.location.hostname)) {
+          a.target = '_blank'  // open external in new tab
+        }
+        return
+      }
+      a.addEventListener('click', (e) => {
+        e.preventDefault()
+        const url = new URL(href, window.location.origin + window.location.pathname)
+        // Spec 029: if relative link without /_p prefix, preserve current port context
+        const target = buildPortPath(url.pathname + url.search, currentPort)
+        navigate(target)
+      })
+    }
+
+    // Intercept form submissions → submit through tunnel
+    function formIntercept(form) {
+      form.addEventListener('submit', (e) => {
+        e.preventDefault()
+        const method = (form.method || 'GET').toUpperCase()
+        const rawAction = form.getAttribute('action') || window.location.pathname
+        // Spec 029: resolve relative action against current path. Without this,
+        // a form with action="./submit" sends "./submit" as the literal path
+        // to the daemon, which 404s. We also strip any /_p<port>/ prefix
+        // from the resolved path (the daemon handles port routing via wire-port).
+        let action
+        try {
+          const resolved = new URL(rawAction, window.location.origin + window.location.pathname)
+          action = resolved.pathname + resolved.search
+        } catch {
+          action = rawAction
+        }
+
+        if (method === 'GET') {
+          const formData = new FormData(form)
+          const params = new URLSearchParams(formData).toString()
+          navigate(action + (action.includes('?') ? '&' : '?') + params)
+        } else {
+          // POST
+          submitPost(form, action)
+        }
+      })
+    }
+
+    async function submitPost(form, action) {
+      log(`POST to ${action}…`)
+      try {
+        const formData = new FormData(form)
+        const body = new URLSearchParams(formData)
+        const res = await tunnel.request({
+          port: 80, method: 'POST', path: action,
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new TextEncoder().encode(body.toString())
+        })
+        log(`POST response: ${res.status} (${res.body.length} bytes)`, res.status < 400 ? 'log-ok' : 'log-err')
+
+        const html = new TextDecoder().decode(res.body)
+        history.pushState({ tunneled: true }, '', tunneledUrl(action))
+
+        // Render result using the same DOMParser approach as navigate()
+        const doc = new DOMParser().parseFromString(html, 'text/html')
+        contentEl.innerHTML = doc.body.innerHTML
+        for (const link of doc.querySelectorAll('link[rel="stylesheet"]')) {
+          const href = link.getAttribute('href')
+          if (!href || href.startsWith('http')) continue
+          try {
+            const cssUrl = new URL(href, window.location.origin + action)
+            const cssRes = await tunnel.request({ port: currentPort || defaultPort, method: 'GET', path: cssUrl.pathname })
+            let cssText = new TextDecoder().decode(cssRes.body)
+            cssText = cssText.replace(/\bbody\b/g, '#tunneled-content')
+            cssText = cssText.replace(/^(\s*)\*/gm, '$1#tunneled-content *')
+            const bareTags2 = ['a','b','bdi','bdo','blockquote','br','button','caption','cite','code','col','colgroup','dd','del','details','dfn','dialog','dl','dt','em','fieldset','figcaption','figure','form','h1','h2','h3','h4','h5','h6','hr','i','iframe','img','input','ins','kbd','label','legend','li','mark','menu','ol','optgroup','option','output','p','pre','progress','q','samp','select','small','span','strong','sub','summary','sup','table','tbody','td','textarea','tfoot','th','thead','time','tr','u','ul','var','video']
+            for (const tag of bareTags2) {
+              cssText = cssText.replace(new RegExp(`(^|[},\\s])${tag}(?=[\\s.,:>+~{[])`, 'gm'), '$1#tunneled-content ' + tag)
+            }
+            const style = document.createElement('style')
+            style.textContent = cssText
+            contentEl.insertBefore(style, contentEl.firstChild)
+          } catch {}
+        }
+        for (const oldScript of [...contentEl.querySelectorAll('script')]) {
+          const newScript = document.createElement('script')
+          const src = oldScript.getAttribute('src')
+          if (src && !src.startsWith('http')) {
+            try {
+              const jsUrl = new URL(src, window.location.origin + action)
+              const jsRes = await tunnel.request({ port: currentPort || defaultPort, method: 'GET', path: jsUrl.pathname })
+              newScript.textContent = `(function(){\n${new TextDecoder().decode(jsRes.body)}\n})()`
+            } catch { continue }
+          } else if (src) {
+            newScript.src = src
+          } else {
+            newScript.textContent = `(function(){\n${oldScript.textContent}\n})()`
+          }
+          oldScript.replaceWith(newScript)
+        }
+        contentEl.querySelectorAll('a').forEach(linkIntercept)
+        contentEl.querySelectorAll('form').forEach(formIntercept)
+        log('POST result rendered')
+      } catch (err) {
+        log(`POST error: ${err.message}`, 'log-err')
+      }
+    }
+
+    // Handle back/forward buttons — strip ?npub= from URL before navigating
+    window.addEventListener('popstate', (event) => {
+      const path = window.location.pathname + window.location.search
+      // Remove npub param, it's a peck concern not a tunnel concern
+      const cleanPath = path.replace(/[\?&]npub=[^&]+/, '').replace(/\?$/, '')
+      if (event.state?.tunneled) {
+        navigate(cleanPath || '/')
+      }
+    })
+
+    // ─── Reconnect State ───
+
+    let reconnectAttempts = 0
+    // Spec 037: from PECK_CONFIG (falls back to PECK_DEFAULTS)
+    const MAX_RECONNECT = PECK_CONFIG.reconnect.max_attempts
+    const RECONNECT_DELAYS = PECK_CONFIG.reconnect.delays_ms
+    let currentNpub = null
+    let currentRelays = null
+    let lastKnownExitIPs = new Set()  // all srflx IPs at connect time (for smart reconnect)
+    let reconnectMode = peckGetSetting('peck_reconnect_mode') || 'smart'
+
+    function updateReconnectControl() {
+      reconnectControl.querySelectorAll('button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.val === reconnectMode)
+      })
+      const hints = {
+        off: 'No automatic reconnect on disconnect',
+        on: 'Always reconnect automatically (may leak real IP if VPN drops)',
+        smart: 'Reconnect only if your external IP is unchanged'
+      }
+      reconnectHint.textContent = hints[reconnectMode] || hints.off
+    }
+    reconnectControl.addEventListener('click', e => {
+      const btn = e.target.closest('button')
+      if (!btn) return
+      reconnectMode = btn.dataset.val
+      peckSetSetting('peck_reconnect_mode', reconnectMode)
+      updateReconnectControl()
+    })
+    updateReconnectControl()
+
+    /**
+     * Query current server-reflexive IPs via a lightweight STUN probe.
+     * Used by smart reconnect to detect IP changes (e.g. VPN dropped → real IP).
+     * Returns ALL srflx IPs (v4 + v6) as a Set so the caller can check
+     * membership rather than exact string equality (avoids v4/v6 mismatch).
+     */
+    async function probeExternalIPs() {
+      return new Promise(resolve => {
+        const ips = new Set()
+        try {
+          const pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          })
+          pc.onicecandidate = (e) => {
+            if (!e.candidate) { try { pc.close() } catch {}; resolve([...ips]); return }
+            const parts = e.candidate.candidate.split(' ')
+            const typIdx = parts.indexOf('typ') + 1
+            if (typIdx > 0 && parts[typIdx] === 'srflx') {
+              ips.add(parts[4])
+            }
+          }
+          pc.createDataChannel('probe')
+          pc.createOffer().then(o => pc.setLocalDescription(o)).catch(() => resolve([]))
+          // Timeout after 5s
+          setTimeout(() => { try { pc.close() } catch {}; resolve([...ips]) }, 5000)
+        } catch { resolve([]) }
+      })
+    }
+
+    function handleDisconnect() {
+      tunnelReady = false
+      if (diagInterval) { clearInterval(diagInterval); diagInterval = null }
+      headerDiag.textContent = ''
+
+      // Respect reconnect mode (spec 012 extension: auto-reconnect privacy control)
+      if (reconnectMode === 'off') {
+        setStatus('failure', 'connection lost')
+        log('Disconnected. Auto-reconnect is off.', 'log-err')
+        showReconnectOverlay()
+        return
+      }
+
+      // Smart mode: check if external IPs are identical before reconnecting
+      if (reconnectMode === 'smart' && lastKnownExitIPs.size > 0) {
+        log('Smart reconnect: checking if external IPs changed…')
+        probeExternalIPs().then(currentIPs => {
+          if (currentIPs.length === 0) {
+            // STUN probe failed. We have a known IP set from connect time,
+            // so we CANNOT verify that the IPs are still the same.
+            // Block reconnect to protect privacy (VPN drop would go undetected).
+            setStatus('failure', 'IP check failed — reconnect blocked')
+            log(`Smart reconnect: STUN probe returned no IPs. Cannot verify privacy. Before: [${[...lastKnownExitIPs].sort().join(', ')}]. Auto-reconnect blocked.`, 'log-err')
+            showReconnectOverlay()
+          } else {
+            // Compare sets: sort both, join as string, compare
+            const before = [...lastKnownExitIPs].sort().join(',')
+            const now = [...currentIPs].sort().join(',')
+            if (before === now) {
+              log(`Smart reconnect: IPs unchanged ([${now}]). Proceeding with reconnect.`)
+              scheduleReconnect()
+            } else {
+              setStatus('failure', 'IP changed — reconnect blocked')
+              log(`Smart reconnect: IPs changed. Before: [${before}] Now: [${now}]. Auto-reconnect blocked to protect privacy.`, 'log-err')
+              showReconnectOverlay()
+            }
+          }
+        })
+        return
+      }
+
+      // 'on' mode: reconnect unconditionally
+      scheduleReconnect()
+    }
+
+    function scheduleReconnect() {
+      if (reconnectAttempts >= MAX_RECONNECT) {
+        setStatus('failure', 'connection lost')
+        log(`Reconnect failed after ${MAX_RECONNECT} attempts`, 'log-err')
+        showReconnectOverlay()
+        return
+      }
+
+      const delay = RECONNECT_DELAYS[Math.min(reconnectAttempts, RECONNECT_DELAYS.length - 1)]
+      reconnectAttempts++
+      setStatus('connecting', `reconnecting… (${reconnectAttempts}/${MAX_RECONNECT})`)
+      log(`Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT} in ${delay/1000}s…`, 'log-err')
+
+      setTimeout(() => attemptReconnect(), delay)
+    }
+
+    /**
+     * Spec 026: handle loud-deny from the daemon.
+     * Stop reconnect attempts (daemon explicitly denied us) and surface
+     * the message to the user.
+     */
+    function handleDeny(message) {
+      tunnelReady = false
+      reconnectAttempts = MAX_RECONNECT  // prevent auto-reconnect
+      if (diagInterval) { clearInterval(diagInterval); diagInterval = null }
+      headerDiag.textContent = ''
+      setStatus('failure', 'access denied')
+      log(`🚫 Access denied by daemon: ${message}`, 'log-err')
+    }
+
+    /**
+     * Spec 033: handle terms-challenge from the daemon.
+     * Shows a modal with terms text. User clicks Accept → transport.acceptTerms(version).
+     * If auto_accept_terms is enabled (localStorage), acceptTerms is called immediately
+     * (handled in native-transport.js — this callback only fires when NOT auto-accepted).
+     *
+     * Spec 034 addition: once the user has accepted a version in this session
+     * (sessionStorage), subsequent reconnects auto-accept the same version
+     * without showing the modal again.
+     */
+    function handleTermsChallenge(text, version, transport) {
+      log(`📄 Terms of Service challenge (version ${version})`, '')
+
+      // Session-level auto-accept: if we already accepted this exact version
+      // earlier in this browser session, skip the modal and accept silently.
+      const sessionAccepted = sessionStorage.getItem('peck_session_terms_version')
+      if (sessionAccepted === version) {
+        transport.acceptTerms(version)
+        setStatus('connecting', truncateNpub(currentNpub || ''))
+        log(`✅ Terms auto-accepted for this session (v${version})`, 'log-ok')
+        return
+      }
+
+      setStatus('connecting', 'awaiting terms…')
+
+      // Build modal
+      const overlay = document.createElement('div')
+      overlay.id = 'terms-overlay'
+      overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:10000;display:flex;align-items:center;justify-content:center;'
+
+      const modal = document.createElement('div')
+      modal.style.cssText = 'background:#161b22;color:#e6edf3;border-radius:12px;padding:24px;max-width:560px;max-height:80vh;display:flex;flex-direction:column;gap:16px;font-family:ui-monospace,monospace;font-size:14px;'
+
+      const title = document.createElement('h3')
+      title.textContent = 'Terms of Service'
+      title.style.cssText = 'margin:0;color:#f59e0b;font-size:18px;'
+      modal.appendChild(title)
+
+      const body = document.createElement('pre')
+      body.textContent = text
+      body.style.cssText = 'white-space:pre-wrap;word-wrap:break-word;overflow-y:auto;max-height:50vh;margin:0;font-family:inherit;line-height:1.5;'
+      modal.appendChild(body)
+
+      const buttons = document.createElement('div')
+      buttons.style.cssText = 'display:flex;gap:12px;justify-content:flex-end;'
+
+      const btnDecline = document.createElement('button')
+      btnDecline.textContent = 'Decline'
+      btnDecline.style.cssText = 'padding:8px 16px;border-radius:6px;border:1px solid #f85149;background:transparent;color:#f85149;cursor:pointer;font-size:14px;'
+      btnDecline.onclick = () => {
+        overlay.remove()
+        reconnectAttempts = MAX_RECONNECT
+        setStatus('failure', 'terms declined')
+        log('Terms declined', 'log-err')
+      }
+
+      const btnAccept = document.createElement('button')
+      btnAccept.textContent = 'Accept'
+      btnAccept.style.cssText = 'padding:8px 16px;border-radius:6px;border:none;background:#f59e0b;color:#0d1117;cursor:pointer;font-weight:600;font-size:14px;'
+      btnAccept.onclick = () => {
+        overlay.remove()
+        transport.acceptTerms(version)
+        sessionStorage.setItem('peck_session_terms_version', version)
+        peckSetSetting('peck_accepted_terms_version', version)
+        updateAutoAcceptToggle()
+        setStatus('connecting', truncateNpub(currentNpub || ''))
+        log(`✅ Terms accepted (version ${version})`, 'log-ok')
+      }
+
+      buttons.appendChild(btnDecline)
+      buttons.appendChild(btnAccept)
+      modal.appendChild(buttons)
+      overlay.appendChild(modal)
+      document.body.appendChild(overlay)
+    }
+
+    /**
+     * Shared debug handler for both startConnection() and attemptReconnect().
+     * Matches the TrysteroTransport calling convention: onDebug(msg, data).
+     */
+    function debugHandler(msg, data) {
+      const labels = {
+        relay_connected: () => { relayStates[data?.url] = 'connected'; renderRelayPills(); return `✓ Relays: ${data?.url ?? '?'}` + (data?.count ? ` (${data.count})` : '') },
+        relay_failed: () => { relayStates[data?.url] = 'failed'; renderRelayPills(); return `✗ Relay failed: ${data?.url ?? '?'} — ${data?.error ?? 'unknown'}` },
+        relay_dead: () => `⚡ Relay dead: ${data?.url ?? '?'}`,
+        relay_reconnect: () => `↻ Reconnecting: ${data?.url ?? '?'}`,
+        subscribe: () => `◉ Subscribed to DMs`,
+        dm_sent: () => `→ ${data?.type ?? '?'} → ${data?.relay ?? '?'} (${data?.len ?? 0}b)`,
+        dm_received: () => `← from ${data?.from ?? '?'} (${data?.len ?? 0}b)`,
+        dm_seen: () => `👁 DM from ${data?.from ?? '?'} → ${data?.to ?? '?'} (we=${data?.ourPubkey ?? '?'}, daemon=${data?.daemonPubkey ?? '?'})`,
+        // Show all relay messages of type NOTICE/OK/EOSE for debugging
+        relay_msg: () => {
+          if (!data) return null
+          if (data.type === 'OK') return `✓ OK: ${data.preview?.slice(0, 100) ?? ''}`
+          if (data.type === 'NOTICE') return `⚠ NOTICE: ${data.preview?.slice(0, 100) ?? ''}`
+          if (data.type === 'EOSE') return `◉ EOSE: ${data.url ?? '?'}`
+          if (data.type === 'EVENT') return null  // suppress EVENT noise
+          return null
+        },
+        relay_notice: () => `⚠ ${data?.url ?? '?'}: ${data?.message ?? ''}`,
+        relay_ok: () => data?.accepted ? null : `✗ Rejected by ${data?.url ?? '?'}: ${data?.message ?? ''}`,
+        relay_closed: () => { relayStates[data?.url] = 'closed'; renderRelayPills(); return `⚠ ${data?.url ?? '?'} CLOSED: ${data?.message ?? ''}` },
+        ws_close: () => `⚡ WS closed: ${data?.url ?? '?'} (code: ${data?.code ?? '?'}${data?.reason ? ', ' + data.reason : ''})`,
+        ice_candidate: () => `ICE ${data?.type ?? '?'}: ${data?.ip ?? '?'}:${data?.port ?? '?'}`,
+        peer_connected: () => `🔗 Peer connected: ${data?.peerId ?? '?'}`,
+        peer_disconnected: () => `🔌 Peer disconnected: ${data?.peerId ?? '?'}`,
+        init: () => `📝 init peerId=${data?.peerId ?? '?'}`,
+        announce_sent: () => `📡 announce sent`,
+        answer_sent: () => `📡 answer sent`,
+        pc_state: () => `🔌 PC: ${data?.state ?? '?'}`,
+        offer_apply_error: () => `✗ offer error: ${data?.error ?? '?'}`,
+        candidate_apply_error: () => `✗ candidate error: ${data?.error ?? '?'}`,
+        nip44_decrypt_failed: () => `✗ NIP-44 decrypt failed: ${data?.error ?? '?'}`,
+        datachannel_received: () => `📡 datachannel: ${data?.label ?? '?'}`,
+        channel_open: () => `📡 channel open: ${data?.label ?? '?'}`,
+        channel_close: () => `📡 channel close: ${data?.label ?? '?'}`,
+        channel_error: () => `✗ channel error: ${data?.error ?? '?'}`,
+        terms_challenge: () => `📄 terms challenge (v${data?.version ?? '?'})`,
+        terms_auto_accepted: () => `✅ terms auto-accepted (v${data?.version ?? '?'})`,
+        terms_accept_sent: () => `→ terms-accept (v${data?.version ?? '?'})`,
+        request_ip_received: () => `📤 request-ip from daemon`,
+        re_announce_with_ip: () => `→ re-announce with client_ip=${data?.client_ip ?? '?'}`,
+        re_announce_without_ip: () => `→ re-announce (no client_ip resolved)`,
+        client_ip_resolved: () => `🧊 client IP: ${data?.ip ?? 'none'}`,
+        client_ip_resolve_failed: () => `✗ client IP resolve failed`,
+      }
+      const fn = labels[msg]
+      const label = fn ? fn() : msg
+      if (label) log(label, msg.includes('dead') || msg.includes('failed') || msg.includes('closed') || msg.includes('Rejected') || msg.includes('error') ? 'log-err' : '')
+    }
+
+    async function attemptReconnect() {
+      if (!currentNpub) return
+      log(`Reconnecting…`)
+      try {
+        tunnel = await connect({
+          npub: currentNpub,
+          relays: currentRelays,
+          timeout: 15000,
+          onDisconnect: handleDisconnect,
+          onDeny: handleDeny,
+          onTermsChallenge: handleTermsChallenge,
+          onOfferSdp: parseOfferSdp,
+          onAnswerSdp: parseAnswerSdp,
+          onOwnIps: handleOwnIpsFromStun,
+          ipPreference: peckGetSetting('peck_ip_preference') || 'both',
+          onDebug: debugHandler
+        })
+
+        // Success!
+        reconnectAttempts = 0
+        tunnelReady = true
+        setStatus('connected', truncateNpub(currentNpub))
+        log('Reconnected!', 'log-ok')
+
+        // Re-setup SW with new tunnel
+        const sw = await setupServiceWorker()
+        if (sw) {
+          try {
+            await Promise.race([
+              connectServiceWorker(sw),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('SW connect timeout')), 5000))
+            ])
+          } catch (err) {
+            log(`SW connect skipped: ${err.message}`)
+          }
+        }
+
+        // Resume diagnostics
+        diagInterval = setInterval(async () => {
+          try {
+            const d = await tunnel.getDiagnostics()
+            if (d) {
+              const line = formatDiagnostics(d)
+              if (line) { headerDiag.textContent = line; diagLine.textContent = line }
+            }
+          } catch {}
+        }, 3000)
+
+        // Restore last page
+        await navigate(currentPath)
+
+      } catch (err) {
+        log(`Reconnect failed: ${err.message}`, 'log-err')
+        // schedule next attempt
+        if (reconnectAttempts >= MAX_RECONNECT) {
+          setStatus('failure', 'connection lost')
+          showReconnectOverlay()
+        } else {
+          const delay = RECONNECT_DELAYS[Math.min(reconnectAttempts, RECONNECT_DELAYS.length - 1)]
+          reconnectAttempts++
+          setStatus('connecting', `reconnecting… (${reconnectAttempts}/${MAX_RECONNECT})`)
+          log(`Next attempt in ${delay/1000}s…`)
+          setTimeout(() => attemptReconnect(), delay)
+        }
+      }
+    }
+
+    function showReconnectOverlay() {
+      contentEl.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:80vh;gap:1rem;font-family:system-ui,sans-serif">
+          <div style="font-size:3rem">⚠</div>
+          <h2 style="color:#f85149;font-size:1.2rem">Connection to tunnel lost</h2>
+          <p style="color:#8b949e;font-size:0.9rem;max-width:400px;text-align:center">
+            The peck daemon may have restarted or your network changed.
+          </p>
+          <div style="display:flex;gap:0.5rem">
+            <button id="btn-retry" style="padding:8px 24px;background:#238636;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px">Reconnect</button>
+            <button id="btn-home" style="padding:8px 24px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;cursor:pointer;font-size:14px">Go Home</button>
+          </div>
+        </div>`
+      document.getElementById('btn-retry')?.addEventListener('click', () => {
+        reconnectAttempts = 0
+        startConnection(currentNpub, currentRelays.join(', '))
+      })
+      document.getElementById('btn-home')?.addEventListener('click', () => {
+        // Subdomain survives navigation, no ?npub= needed
+        if (npubFromSubdomain()) {
+          window.location.href = '/'
+          return
+        }
+        const npub = sessionStorage.getItem('peck-npub')
+        window.location.href = npub ? `/?npub=${npub}` : '/'
+      })
+    }
+
+    // ─── Connection ───
+
+    async function startConnection(npub, relay) {
+      // Abort any in-flight connection from a previous attempt
+      if (tunnel) { try { tunnel.close() } catch {}; tunnel = null }
+      tunnelReady = false
+      if (diagInterval) { clearInterval(diagInterval); diagInterval = null }
+      diagLine.textContent = ''
+      headerDiag.textContent = ''
+      logEl.innerHTML = ''
+      reconnectAttempts = 0
+      currentNpub = npub
+      currentPath = '/'
+      lastKnownExitIPs = new Set()  // reset for new connection
+      debugNpub.value = npub
+      setStatus('connecting', truncateNpub(npub))
+      log(`Connecting to ${npub.slice(0, 20)}…`)
+      const relayList = relay.split(',').map(s => s.trim()).filter(Boolean)
+      currentRelays = relayList
+      log(`Relays: ${relayList.join(', ')}`)
+
+      try {
+        tunnel = await connect({
+          npub,
+          relays: relayList,
+          timeout: 15000,
+          onDisconnect: handleDisconnect,
+          onDeny: handleDeny,
+          onTermsChallenge: handleTermsChallenge,
+          onOfferSdp: parseOfferSdp,
+          onAnswerSdp: parseAnswerSdp,
+          onOwnIps: handleOwnIpsFromStun,
+          ipPreference: peckGetSetting('peck_ip_preference') || 'both',
+          onDebug: debugHandler
+        })
+        tunnelReady = true
+        setStatus('connected', truncateNpub(npub))
+        log('Peer connected', 'log-ok')
+
+        // Setup SW for sub-assets (CSS, JS, images, fetch)
+        const sw = await setupServiceWorker()
+        if (sw) {
+          try {
+            await Promise.race([
+              connectServiceWorker(sw),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('SW connect timeout')), 5000))
+            ])
+          } catch (err) {
+            log(`SW connect skipped: ${err.message}`)
+          }
+        }
+
+        // Diagnostics
+        function updateDiag(d) {
+          const line = formatDiagnostics(d)
+          if (!line) return
+          // Mark the currently selected pair in IP lists
+          if (d.localIp) ownExitIPs.forEach(e => { e.connected = (e.ip === d.localIp) })
+          if (d.remoteIp) daemonExitIPs.forEach(e => { e.connected = (e.ip === d.remoteIp) })
+          renderIpList(exitContainer, daemonExitIPs, daemonIpVersions)
+          renderIpList(ownIpContainer, ownExitIPs, ownIpVersions)
+          headerDiag.textContent = line
+          diagLine.textContent = line
+        }
+        diagInterval = setInterval(async () => {
+          try {
+            const d = await tunnel.getDiagnostics()
+            if (d) updateDiag(d)
+          } catch {}
+        }, 3000)
+        setTimeout(async () => {
+          try {
+            const d = await tunnel.getDiagnostics()
+            if (d) { updateDiag(d); log(formatDiagnostics(d)) }
+          } catch {}
+        }, 1000)
+
+        // Load first page through tunnel.
+        // Spec 029: respect the /_p<port>/ prefix if present in the
+        // initial URL — otherwise we lose the port context on first load.
+        const initialPath = window.location.pathname + window.location.search
+        await navigate(initialPath === '/' ? '/' : initialPath)
+
+      } catch (err) {
+        setStatus('failure', truncateNpub(npub))
+        log(`Error: ${err.message}`, 'log-err')
+        if (diagInterval) { clearInterval(diagInterval); diagInterval = null }
+        tunnel = null
+        tunnelReady = false
+      }
+    }
+
+    // ─── Init ───
+
+    // Mobile pull-to-refresh is handled entirely via CSS + viewport meta:
+    //   - maximum-scale=1.0 + user-scalable=no → can't zoom-out
+    //   - overscroll-behavior-y: contain on html/body → no rubber-band
+    //   - touch-action: pan-x pan-y on #tunneled-content → scroll but no zoom
+    //
+    // A previous version also had a JS touchmove handler that called
+    // preventDefault() on downward swipes at scrollY<=0. But it broke
+    // scrolling inside #tunneled-content because window.scrollY is always 0
+    // (the body doesn't scroll — the content wrapper does). Removed.
+
+    // Detect page hide (mobile), unload, visibility loss to clean up.
+    // The SW's beforeunload UNREGISTER already clears the tunnel port,
+    // but we also want to abort any in-flight WebRTC connection.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && tunnel && !tunnelReady) {
+        // Page hidden while still connecting — abort
+        try { tunnel.close() } catch {}
+        tunnel = null
+      }
+    })
+
+    // ─── Spec 037: Boot (config → gate → connect) ───
+    loadServerConfig().then(async () => {
+      // Populate default relays into the hidden input
+      const relayInput = $('debug-relay')
+      if (relayInput && !relayInput.value) {
+        relayInput.value = PECK_CONFIG.default_relays.join(', ')
+      }
+
+      // Mandatory info gate
+      if (needsInfoGate() && localStorage.getItem('peck-info-accepted') !== 'true') {
+        await showMandatoryGate()
+      }
+
+      // Boot peck (original logic)
+      const npub = await resolveNpub()
+      if (npub) {
+        sessionStorage.setItem('peck-npub', npub)
+        debugNpub.value = npub
+        startConnection(npub, debugRelay.value.trim() || PECK_CONFIG.default_relays[0])
+      } else {
+        setStatus('failure', 'No pubkey')
+        openSettings()
+        debugNpub.focus()
+        log('No pubkey found in URL. Enter one manually.')
+      }
+    })
+  </script>
+</body>
+</html>

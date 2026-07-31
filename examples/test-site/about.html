@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <title>About · peck</title>
+  <link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+  <div class="container">
+
+    <header class="hero">
+      <img src="./assets/logo.svg" alt="peck" class="hero-logo">
+      <h1>about peck</h1>
+      <p>A Nostr-signaled WebRTC hole-punching tunnel protocol.</p>
+    </header>
+
+    <nav>
+      <a href="./">Home</a>
+      <a href="./about">About</a>
+      <a href="./links">Links</a>
+      <a href="./form">Form</a>
+      <a href="./redirect">Redirect</a>
+      <a href="./missing">404</a>
+    </nav>
+
+    <main>
+
+      <section class="card">
+        <h2>What this site tests</h2>
+        <p>This test site exercises the peck tunnel with the following:</p>
+        <ul style="margin: 12px 0 0 20px; color: var(--text-muted); line-height: 1.9">
+          <li>Multiple HTML pages with in-page navigation</li>
+          <li>External CSS and JS assets</li>
+          <li>Inline images (SVG)</li>
+          <li>JSON API endpoint</li>
+          <li>Form POST submission</li>
+          <li>HTTP 302 redirect</li>
+          <li>Custom 404 error page</li>
+          <li>Large content (100 paragraphs of lorem ipsum)</li>
+        </ul>
+        <p style="margin-top: 16px">If you can navigate between pages, submit the form, and see the clock ticking on the home page, the tunnel handles real web traffic correctly.</p>
+      </section>
+
+      <section class="card">
+        <h2>How peck works</h2>
+        <ol style="margin: 12px 0 0 20px; color: var(--text-muted); line-height: 1.9">
+          <li>Browser generates ephemeral Nostr keypair</li>
+          <li>Browser publishes encrypted DM (NIP-04) to Nostr relay</li>
+          <li>Daemon receives DM, responds with WebRTC SDP offer</li>
+          <li>Browser and daemon exchange ICE candidates</li>
+          <li>WebRTC peer connection established (hole-punched through NAT)</li>
+          <li>HTTP requests multiplexed over DataChannel</li>
+        </ol>
+      </section>
+
+    </main>
+
+    <footer>
+      <p>Served through <strong>peck</strong> — Nostr-signaled WebRTC tunnel</p>
+    </footer>
+
+  </div>
+</body>
+</html>

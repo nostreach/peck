@@ -1,0 +1,91 @@
+# peck Access Control Policy — Spec 026
+#
+# This is an example policy file. Copy to /etc/peck/policy.yaml and
+# customize. Start the daemon with:
+#
+#   peck-daemon --policy-file /etc/peck/policy.yaml ...
+#
+# Hot-reload after editing:
+#
+#   kill -HUP $(pidof peck-daemon)
+#
+# Schema documentation: see specs/026-access-control/spec.md
+
+# Default effect when no rule matches. One of: allow | deny | loud-deny
+# - allow     = daemon behaves as usual (backwards compatible)
+# - deny      = silent drop, client gets no response
+# - loud-deny = daemon sends a padded deny-DM to the client
+default_effect: allow
+
+rules:
+  # ─── Example 1: Private daemon (only specific pubkeys allowed) ────────
+  # Uncomment and replace with your friends' npubs. The "deny all" rule
+  # at the end catches everyone else.
+  #
+  # - comment: "alice is allowed"
+  #   pubkeys:
+  #     - npub1alice...    # npub form (recommended)
+  #     - abcd1234...      # or hex form (64 chars, no 0x prefix)
+  #   effect: allow
+  #
+  # - comment: "everyone else is denied"
+  #   pubkeys: []           # empty = match all
+  #   effect: deny
+
+  # ─── Example 2: Block known abuse pubkeys ─────────────────────────────
+  # Daemon stays public, only specific bots are blocked.
+  #
+  # - comment: "known spam bot"
+  #   pubkeys: [npub1bot...]
+  #   effect: deny
+
+  # ─── Example 3: Loud-deny with message (paid service) ─────────────────
+  # Send the client a readable message instead of silent-dropping.
+  # All loud-deny messages are padded to 256 bytes (FR-008) so clients
+  # can't enumerate deny reasons by payload length.
+  #
+  # - comment: "freerider"
+  #   pubkeys: [npub1free...]
+  #   effect: loud-deny
+  #   message: "payment required, see https://example.com/pay"
+
+  # ─── Example 4: Block by IP CIDR ──────────────────────────────────────
+  # Note: client_ip is self-declared via STUN (Spec 023). If the client
+  # doesn't send it, IP-based rules silently don't match. Never use IP
+  # as the sole deny reason if you want strong guarantees.
+  #
+  # - comment: "block datacenter range"
+  #   client_ips:
+  #     - 10.0.0.0/8
+  #     - 192.168.0.0/16
+  #   effect: deny
+
+  # ─── Example 5: ASN / Country filter (requires MaxMind GeoLite2) ──────
+  # Requires --geoip-db flag and geoip2 Python lib. If GeoIP isn't
+  # installed, ASN/country rules are silently non-matching.
+  #
+  # - comment: "block Tor exit nodes (example ASN)"
+  #   asn: [12345, 67890]
+  #   effect: deny
+  #
+  # - comment: "only DACH region allowed"
+  #   country: [DE, AT, CH]
+  #   pubkeys: []  # match any pubkey
+  #   effect: allow
+
+# ─── Matching rules ────────────────────────────────────────────────────
+#
+# 1. Rules are evaluated top-down. First match wins.
+# 2. A rule matches when ALL specified criteria match. Empty/omitted
+#    criteria match any value.
+# 3. If no rule matches, default_effect applies.
+# 4. Pubkeys can be npub1... or hex (64 chars). They are normalised
+#    internally.
+# 5. client_ips accept IPv4 and IPv6 CIDR notation.
+#
+# ─── Audit log ─────────────────────────────────────────────────────────
+#
+# Start daemon with --audit-log /etc/peck/audit.log to record every
+# deny/loud-deny decision. Pubkeys and IPs are hashed with PBKDF2 + a
+# random salt (rotates per daemon run). Use --audit-log-plaintext to
+# write raw values (NOT recommended for production).

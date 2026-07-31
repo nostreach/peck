@@ -1,0 +1,25 @@
+[Unit]
+Description=peck daemon — Nostr-signaled WebRTC tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node ~/peck/examples/server.js \
+  --nsec-file ~/.config/peck/nsec \
+  --ports 80:http://localhost:8081 \
+  --relays wss://relay.damus.io,wss://nostr.mom,wss://relay.primal.net
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=peck-daemon
+
+# Resource limits
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target

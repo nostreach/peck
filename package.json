@@ -1,0 +1,38 @@
+{
+  "name": "peck-browser",
+  "version": "0.1.0",
+  "description": "peck browser client — NIP-44 v2 + native RTCPeerConnection. Connects to the peck Python daemon.",
+  "type": "module",
+  "main": "src/client.js",
+  "exports": {
+    ".": "./src/client.js",
+    "./client": "./src/client.js"
+  },
+  "scripts": {
+    "test": "node --test tests/protocol.test.js tests/client.test.js",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "@noble/secp256k1": "^3.1.0",
+    "esbuild": "^0.25.0"
+  },
+  "keywords": [
+    "nostr",
+    "webrtc",
+    "hole-punching",
+    "p2p",
+    "nat-traversal",
+    "tunnel",
+    "nostreach"
+  ],
+  "author": "nostreach",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
+}

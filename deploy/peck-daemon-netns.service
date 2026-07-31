@@ -1,0 +1,38 @@
+[Unit]
+Description=peck daemon — Nostr-signaled WebRTC tunnel (netns VPN)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Start VPN namespace with all configs from /etc/peck/wg/
+# (writes PECK_WG_IPS to /run/peck-wg-ips)
+ExecStartPre=+/bin/bash -c 'systemctl stop peck-port-fwd 2>/dev/null; rm -f /run/systemd/transient/peck-port-fwd.service 2>/dev/null; true'
+ExecStartPre=+/usr/local/bin/peck-vpn.sh up /etc/peck/wg/tunnel-dk.conf /etc/peck/wg/tunnel-es.conf /etc/peck/wg/tunnel-at.conf
+
+# Read WG IPs and create environment file for daemon
+ExecStartPre=/bin/bash -c 'grep PECK_WG_IPS /run/peck-wg-ips > /run/peck-daemon.env 2>/dev/null || true'
+
+# Port forwarder: host:80 → namespace:10.200.200.2:80
+ExecStartPre=+/bin/bash -c 'nohup socat TCP-LISTEN:80,fork,reuseaddr TCP:10.200.200.2:80 &'
+
+# Daemon inside the namespace
+EnvironmentFile=-/run/peck-daemon.env
+ExecStart=+/usr/bin/ip netns exec peck /usr/bin/node ~/peck/examples/server.js \
+  --nsec-file ~/.config/peck/nsec \
+  --ports 80:http://10.200.200.1:8081 \
+  --relays wss://relay.primal.net,wss://no.str.cr
+
+ExecStop=/usr/bin/pkill -f 'socat TCP-LISTEN:80'
+ExecStopPost=+/usr/local/bin/peck-vpn.sh down
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=peck-daemon
+
+[Install]
+WantedBy=multi-user.target

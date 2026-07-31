@@ -1,0 +1,15 @@
+{
+  "default_relays": [
+    "wss://relay.damus.io",
+    "wss://relay.primal.net",
+    "wss://relay.nostr.net",
+    "wss://nostr.oxtr.dev",
+    "wss://no.str.cr"
+  ],
+  "reconnect": {
+    "max_attempts": 3,
+    "delays_ms": [5000, 10000, 20000]
+  },
+  "ice_gathering_timeout_ms": 3000,
+  "info_mandatory": "npub"
+}

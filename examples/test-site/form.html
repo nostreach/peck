@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <title>Form · peck</title>
+  <link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+  <div class="container">
+
+    <header class="hero">
+      <img src="./assets/logo.svg" alt="peck" class="hero-logo">
+      <h1>form tests</h1>
+      <p>POST and GET submissions through the tunnel.</p>
+    </header>
+
+    <nav>
+      <a href="./">Home</a>
+      <a href="./about">About</a>
+      <a href="./links">Links</a>
+      <a href="./form">Form</a>
+      <a href="./redirect">Redirect</a>
+      <a href="./missing">404</a>
+    </nav>
+
+    <main>
+
+      <section class="card">
+        <h2>POST form</h2>
+        <p>Submits via <code>POST</code> to <code>./submit</code>. On success you'll see a result page echoing your input.</p>
+        <form action="./submit" method="POST" style="margin-top: 16px">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" placeholder="Your name">
+          <label for="msg" style="margin-top: 12px">Message</label>
+          <textarea id="msg" name="message" placeholder="Your message"></textarea>
+          <button type="submit" style="margin-top: 12px">Submit POST</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>GET form</h2>
+        <p>Submits via <code>GET</code> — check the URL for query params after submit.</p>
+        <form action="./submit" method="GET" style="margin-top: 16px">
+          <label for="q">Search</label>
+          <input type="text" id="q" name="q" placeholder="Search term">
+          <button type="submit" style="margin-top: 12px">Submit GET</button>
+        </form>
+      </section>
+
+    </main>
+
+    <footer>
+      <p>Served through <strong>peck</strong> — Nostr-signaled WebRTC tunnel</p>
+    </footer>
+
+  </div>
+</body>
+</html>

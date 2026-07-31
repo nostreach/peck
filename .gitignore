@@ -1,0 +1,17 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.pid
+
+# Node
+node_modules/
+dist/
+
+# SpecKit / internal tooling
+.specify/
+
+# OS
+.DS_Store
