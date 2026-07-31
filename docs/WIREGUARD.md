@@ -150,12 +150,11 @@ The daemon logs the assigned WG IP per session:
 📝 session [serve] for abc12345 → 10.0.0.1, ports=[80] (idle=1200s)
 ```
 
-## Security Considerations
+## Proof of Concept — Not a Privacy Tool
 
-- **WireGuard is the exit point**: All tunneled traffic exits through the WireGuard tunnel, not the host's main interface. Choose VPN providers carefully.
-- **netns isolation**: Without a network namespace, the daemon could accidentally expose the host's real IP as an ICE candidate. Always use netns in production.
-- **DNS leaks**: Configure DNS resolution inside the netns to use the WireGuard exit's DNS resolver, not the host's.
-- **Handshake freshness**: The daemon only uses tunnels with a handshake within the last 5 minutes. Stale tunnels are skipped.
+**The WireGuard multi-tunnel setup is a proof of concept.** While all tests so far are successful and promising, anonymity behind the VPNs cannot be guaranteed. IP leaks through WebRTC, DNS, or other browser side-channels are possible and have not been exhaustively ruled out.
+
+If you need genuine anonymity, rely on established methods (Tor, properly configured VPN chains, hardened browser profiles). peck's multi-tunnel feature is designed for **IP diversity** (preventing trivial correlation), not for anonymity.
 
 ## Without WireGuard (Single IP)
 
