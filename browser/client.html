@@ -26,13 +26,13 @@
     - default-src 'self': only load resources from this origin
     - script-src 'self' 'unsafe-inline': allow inline scripts (peck client
       architecture requires this — tunneled pages inject <script> tags)
-    - connect-src 'self' wss: ws:: allow WebSocket (Nostr relays) + same-origin fetch
+    - connect-src 'self' wss: ws: https:: allow WebSocket (Nostr relays) + DoH TXT lookups (https://)
     - img-src 'self' data:: allow inline images from tunneled content
     - style-src 'self' 'unsafe-inline': allow inline styles
     Note: This CSP does NOT prevent tunneled scripts from reading cookies or
     sessionStorage — see README "Security Model" section for the full picture.
   -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' wss: ws:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' wss: ws: https:; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; form-action 'self'; base-uri 'self'; object-src 'none';">
   <title>peck</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -79,6 +79,29 @@
       font-size: 14px;
       z-index: 100000;
     }
+
+    /* Spec 039: Vault password prompt (inline in header) */
+    #vault-prompt {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      flex-shrink: 0;
+      margin-left: auto;
+    }
+    #vault-prompt input[type=password] {
+      background: #161b22; border: 1px solid #30363d; color: #e6edf3;
+      padding: 4px 8px; border-radius: 4px; font-size: 13px;
+      width: 80px; min-width: 60px;
+    }
+    #vault-prompt .vault-btn {
+      background: #238636; color: #fff; border: none; padding: 4px 8px;
+      border-radius: 4px; font-size: 13px; cursor: pointer; white-space: nowrap;
+    }
+    #vault-prompt .vault-btn-secondary {
+      background: #21262d; color: #8b949e; border: 1px solid #30363d;
+    }
+    #vault-prompt .vault-error { color: #f85149; font-size: 12px; }
+
     #status-dot {
       width: 10px; height: 10px; border-radius: 50%;
       flex-shrink: 0; transition: background 0.2s;
@@ -93,6 +116,7 @@
     #npub-display {
       font-family: monospace; color: #8b949e;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      min-width: 0; flex-shrink: 1; flex-grow: 1;
     }
     #header-diag {
       font-family: monospace; font-size: 11px; color: #3fb950;
@@ -251,6 +275,7 @@
     }
     .settings-row {
       display: flex; align-items: center; justify-content: space-between;
+      gap: 0.5rem;
       font-size: 13px; color: #c9d1d9;
     }
     .settings-hint { font-size: 11px; color: #6e7681; }
@@ -382,6 +407,13 @@
     <span id="status-dot" class="connecting"></span>
     <span id="npub-display">initializing…</span>
     <span id="header-diag"></span>
+    <!-- Spec 039: Vault password prompt (inline in header, hidden after decrypt/skip) -->
+    <div id="vault-prompt" style="display:none">
+      <input type="password" id="vault-password" placeholder="Password" autocomplete="off" spellcheck="false">
+      <button id="vault-decrypt" class="vault-btn">🔓</button>
+      <button id="vault-skip" class="vault-btn vault-btn-secondary">Skip</button>
+      <span id="vault-error" class="vault-error"></span>
+    </div>
     <button id="info-toggle" title="What is peck?">ⓘ</button>
     <button id="settings-toggle">⚙</button>
   </div>
@@ -394,6 +426,11 @@
       <div class="settings-header">
         <h3>Settings</h3>
         <button id="settings-close">✕</button>
+      </div>
+
+      <div class="settings-section" id="identity-section">
+        <div class="settings-label">Nostr Identity</div>
+        <div id="identity-content"></div>
       </div>
 
       <div class="settings-section">
@@ -449,6 +486,27 @@
       </div>
 
       <div class="settings-section">
+        <div class="settings-label">Security</div>
+        <div class="settings-row">
+          <span>Encrypted vault</span>
+          <div id="vault-status-display" style="font-size:13px;color:#8b949e">OFF</div>
+        </div>
+        <div id="vault-enable-area">
+          <div class="settings-row">
+            <input type="password" id="vault-enable-pw" placeholder="New password (min 8 chars)" autocomplete="off" spellcheck="false" style="flex:1;font-size:13px;background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:4px 8px;border-radius:4px">
+            <button id="vault-enable-btn" class="settings-btn" style="white-space:nowrap">Enable</button>
+          </div>
+        </div>
+        <div id="vault-manage-area" style="display:none">
+          <div class="settings-row">
+            <input type="password" id="vault-manage-pw" placeholder="Current password" autocomplete="off" spellcheck="false" style="flex:1;font-size:13px;background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:4px 8px;border-radius:4px">
+            <button id="vault-disable-btn" class="settings-btn" style="white-space:nowrap">Disable</button>
+          </div>
+        </div>
+        <div id="vault-msg" class="settings-hint" style="color:#f85149"></div>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-label"><button id="advanced-toggle">▸ Advanced</button></div>
         <div id="diag"></div>
         <div id="log"></div>
@@ -460,7 +518,7 @@
   <div id="tunneled-content"></div>
 
   <script type="module">
-    import { connect, formatDiagnostics } from '../src/client.js?v=20260730t'
+    import { connect, formatDiagnostics, generateKeypair, deriveNpub } from '../src/client.js?v=20260801'
     // NativeTransport is the default in client.js now — no _transport needed.
     // We import it only so it gets loaded for debugging in the console.
     import { NativeTransport } from '../src/native-transport.js?v=20260730t'
@@ -587,7 +645,7 @@
     // across all subdomains (each npub1xxx.example.com is a different origin).
     // localStorage is used as a fast local cache; the cookie is the source of
     // truth on page load. sessionStorage settings are NOT synced (per-tab).
-    const PECK_SETTINGS = ['peck_reconnect_mode', 'peck_ip_preference', 'peck_auto_accept_terms', 'peck_accepted_terms_version', 'peck_relays']
+    const PECK_SETTINGS = ['peck_reconnect_mode', 'peck_ip_preference', 'peck_auto_accept_terms', 'peck_accepted_terms_version', 'peck_relays', 'peck_nsec']
 
     function peckGetSetting(key, fallback) {
       // 1. Try cookie (cross-subdomain)
@@ -606,17 +664,229 @@
       // Write to cookie on root domain (cross-subdomain), 1 year, SameSite=Lax
       const domain = '.' + SITE_DOMAIN
       const cookieOpts = `domain=${domain};`
-      document.cookie = `${key}=${encodeURIComponent(value)};${cookieOpts}max-age=31536000;path=/;SameSite=Lax`
+      document.cookie = `${key}=${encodeURIComponent(value)};${cookieOpts}max-age=31536000;path=/;SameSite=Lax;Secure`
       // Also write to localStorage for fast access
       localStorage.setItem(key, value)
+    }
+
+    // C3 fix: escape strings for safe insertion into innerHTML
+    function escapeHtml(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
     }
 
     function peckRemoveSetting(key) {
       const domain = '.' + SITE_DOMAIN
       const cookieOpts = `domain=${domain};`
-      document.cookie = `${key}=;${cookieOpts}max-age=0;path=/;SameSite=Lax`
+      // Delete with domain attribute
+      document.cookie = `${key}=;${cookieOpts}max-age=0;path=/;SameSite=Lax;Secure`
+      // Also delete without domain (covers cookies set without domain attr)
+      document.cookie = `${key}=;max-age=0;path=/;SameSite=Lax;Secure`
       localStorage.removeItem(key)
     }
+
+    // ─── Spec 039: Encrypted Settings Vault ─────────────────────────────
+    // Optional password-protected AES-256-GCM encryption for settings.
+    // When enabled, all peck_* settings are stored as a single peck_vault
+    // cookie (base64 of [version:2][salt:16][iv:12][ciphertext+tag]).
+    // Tunneled page scripts see only ciphertext in document.cookie.
+
+    const VAULT_COOKIE = 'peck_vault'
+    // v1 = PBKDF2 100K iterations (pre-audit)
+    // v2 = PBKDF2 600K iterations (SEC-8 audit fix, OWASP 2026)
+    const VAULT_VERSION = 2
+
+    // Decrypted settings live here (null = not yet decrypted / using defaults)
+    let _vaultSettings = null  // null = no vault OR not decrypted; object = decrypted
+    let _vaultActive = false    // true = vault cookie exists
+    let _vaultUnlocked = false  // true = successfully decrypted
+    let _vaultSkipped = false   // true = user clicked Skip (vault untouched, defaults in use)
+    let _vaultPassword = null   // retained for auto-reencrypt (FR-019); cleared on disable
+    let _vaultReencryptTimer = null
+
+    // Spec 040: Ephemeral session keys — declared early to avoid TDZ
+    // (renderIdentity reads these before startConnection sets them)
+    let _ephemeralNpub = null
+    let _ephemeralNsec = null
+
+    function vaultHasCookie() {
+      return document.cookie.split('; ').some(c => c.startsWith(VAULT_COOKIE + '='))
+    }
+
+    function _getVaultCookieValue() {
+      const c = document.cookie.split('; ').find(c => c.startsWith(VAULT_COOKIE + '='))
+      if (!c) return null
+      return decodeURIComponent(c.slice(VAULT_COOKIE.length + 1))
+    }
+
+    function _setVaultCookie(b64blob) {
+      const domain = '.' + SITE_DOMAIN
+      document.cookie = `${VAULT_COOKIE}=${encodeURIComponent(b64blob)};domain=${domain};max-age=31536000;path=/;SameSite=Lax;Secure`
+    }
+
+    function _removeVaultCookie() {
+      const domain = '.' + SITE_DOMAIN
+      document.cookie = `${VAULT_COOKIE}=;domain=${domain};max-age=0;path=/;SameSite=Lax;Secure`
+    }
+
+    async function _deriveKey(password, salt, iterations = 600000) {
+      const enc = new TextEncoder()
+      const keyMaterial = await crypto.subtle.importKey(
+        'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
+      )
+      return crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+        keyMaterial,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+      )
+    }
+
+    async function vaultEncrypt(settingsObj, password) {
+      const salt = crypto.getRandomValues(new Uint8Array(16))
+      const iv = crypto.getRandomValues(new Uint8Array(12))
+      const key = await _deriveKey(password, salt)
+      const enc = new TextEncoder()
+      const plaintext = enc.encode(JSON.stringify(settingsObj))
+      const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv }, key, plaintext
+      ))
+      // Assemble blob: [version:2][salt:16][iv:12][ciphertext+tag]
+      const blob = new Uint8Array(2 + 16 + 12 + ciphertext.length)
+      const dv = new DataView(blob.buffer)
+      dv.setUint16(0, VAULT_VERSION)
+      blob.set(salt, 2)
+      blob.set(iv, 18)
+      blob.set(ciphertext, 30)
+      // Base64 encode
+      return btoa(String.fromCharCode(...blob))
+    }
+
+    async function vaultDecrypt(b64blob, password) {
+      // Decode base64 → Uint8Array
+      const binary = atob(b64blob)
+      const blob = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i++) blob[i] = binary.charCodeAt(i)
+
+      if (blob.length < 2 + 16 + 12 + 16) throw new Error('vault too short')
+      const dv = new DataView(blob.buffer)
+      const version = dv.getUint16(0)
+
+      // v1 (pre-audit) used 100K PBKDF2 iterations; v2 uses 600K
+      let iterations
+      if (version === 1) iterations = 100000
+      else if (version === 2) iterations = 600000
+      else throw new Error(`unsupported vault version ${version}`)
+
+      const salt = blob.slice(2, 18)
+      const iv = blob.slice(18, 30)
+      const ciphertext = blob.slice(30)
+
+      const key = await _deriveKey(password, salt, iterations)
+      const plaintext = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv }, key, ciphertext
+      )
+      const dec = new TextDecoder()
+      return JSON.parse(dec.decode(plaintext))
+    }
+
+    // FR-019/020: debounced auto-reencrypt after settings change
+    async function _vaultReencrypt() {
+      if (!_vaultUnlocked || !_vaultSettings || !_vaultPassword) return
+      try {
+        const blob = await vaultEncrypt(_vaultSettings, _vaultPassword)
+        _setVaultCookie(blob)
+      } catch (e) {
+        console.warn('Vault re-encryption failed:', e.message)
+      }
+    }
+
+    function _scheduleVaultReencrypt() {
+      if (!_vaultUnlocked) return
+      clearTimeout(_vaultReencryptTimer)
+      _vaultReencryptTimer = setTimeout(() => _vaultReencrypt(), 500)
+    }
+
+    async function vaultEnable(password) {
+      // Collect current settings into an object
+      const settings = {}
+      for (const key of PECK_SETTINGS) {
+        const val = peckGetSetting(key)
+        if (val !== null && val !== undefined) settings[key] = val
+      }
+      // Spec 040: If no persisted nsec exists, persist the current ephemeral
+      // session nsec so the user keeps their identity when enabling encryption.
+      if (!settings['peck_nsec'] && _ephemeralNsec) {
+        settings['peck_nsec'] = _ephemeralNsec
+      }
+      const blob = await vaultEncrypt(settings, password)
+      _setVaultCookie(blob)
+      // Remove individual cookies
+      for (const key of PECK_SETTINGS) peckRemoveSetting(key)
+      _vaultSettings = settings
+      _vaultPassword = password  // FR-021: retain for auto-reencrypt
+      _vaultActive = true
+      _vaultUnlocked = true
+    }
+
+    async function vaultDisable(password) {
+      const blob = _getVaultCookieValue()
+      if (!blob) throw new Error('no vault')
+      const settings = await vaultDecrypt(blob, password)
+      // Clear vault state BEFORE restoring cookies so peckSetSetting
+      // writes plaintext instead of early-returning (_vaultActive guard)
+      _removeVaultCookie()
+      _vaultSettings = null
+      _vaultActive = false
+      _vaultUnlocked = false
+      _vaultPassword = null
+      clearTimeout(_vaultReencryptTimer)
+      // Now restore individual cookies/localStorage
+      // CRITICAL: Never restore peck_nsec to plaintext storage (C1 audit fix)
+      for (const [key, val] of Object.entries(settings)) {
+        if (key === 'peck_nsec') continue  // identity is lost, not leaked
+        peckSetSetting(key, val)
+      }
+    }
+
+    // Override peckGetSetting to check vault first
+    const _origPeckGetSetting = peckGetSetting
+    peckGetSetting = function(key, fallback) {
+      if (_vaultUnlocked && _vaultSettings) {
+        return key in _vaultSettings ? _vaultSettings[key] : fallback
+      }
+      if (_vaultActive && !_vaultUnlocked) {
+        // Vault exists but not unlocked — return fallback (defaults)
+        return fallback
+      }
+      return _origPeckGetSetting(key, fallback)
+    }
+
+    // Override peckSetSetting to update vault in memory
+    const _origPeckSetSetting = peckSetSetting
+    peckSetSetting = function(key, value) {
+      if (_vaultUnlocked && _vaultSettings) {
+        _vaultSettings[key] = value
+        _scheduleVaultReencrypt()  // FR-019/020: debounced re-encrypt
+        return  // Don't write plaintext cookies when vault is active
+      }
+      // Don't write plaintext cookies if a vault cookie exists (even if not unlocked)
+      if (_vaultActive) return
+      _origPeckSetSetting(key, value)
+    }
+
+    // Init vault state on page load
+    _vaultActive = vaultHasCookie()
+    // If vault is active, purge any leftover plaintext cookies/localStorage
+    // (can happen if browser didn't honor the domain-attributed deletion)
+    if (_vaultActive) {
+      for (const key of PECK_SETTINGS) peckRemoveSetting(key)
+    }
+
+    // Spec 039 FR-007: If vault is active, boot must wait for decrypt or skip.
+    // Resolves once the user decrypts (settings available) or skips (defaults).
+    let _vaultGateResolve
+    const _vaultGate = new Promise(resolve => { _vaultGateResolve = resolve })
 
     // Migrate existing localStorage values to cookies on first load
     function peckMigrateSettings() {
@@ -638,16 +908,17 @@
     const dot = $('status-dot')
     const npubDisplay = $('npub-display')
     const headerDiag = $('header-diag')
-    const debugToggle = $('settings-toggle')
     const debugPanel = $('peck-settings')
     const diagLine = $('diag')
     const debugNpub = $('debug-npub')
     const debugRelay = $('debug-relay')
     // Restore saved relays from cookie/localStorage (cross-subdomain)
-    {
+    // Wrapped in a function so it can be re-run after vault unlock (FR-007).
+    function restoreSavedRelays() {
       const savedRelays = peckGetSetting('peck_relays')
       if (savedRelays) debugRelay.value = savedRelays
     }
+    restoreSavedRelays()
     const logEl = $('log')
     const contentEl = $('tunneled-content')
 
@@ -740,7 +1011,7 @@
       logEl.scrollTop = logEl.scrollHeight
     }
 
-    function truncateNpub(npub) { return npub.slice(0, 20) + '…' }
+    function truncateNpub(npub) { return npub }  // CSS handles ellipsis dynamically
 
     // ─── bech32m encode (hex → npub) ───────────────────────────────
     // Needed because dns2nostr TXT records contain hex pubkeys, but peck
@@ -968,7 +1239,313 @@
     })
     updateAutoAcceptToggle()
 
-    // Spec 034: IP version segmented control
+    // ─── Spec 039: Vault UI ──────────────────────────────────────────
+    const vaultPrompt = $('vault-prompt')
+    const vaultPwInput = $('vault-password')
+    const vaultDecryptBtn = $('vault-decrypt')
+    const vaultSkipBtn = $('vault-skip')
+    const vaultError = $('vault-error')
+    const vaultStatusDisplay = $('vault-status-display')
+    const vaultEnableArea = $('vault-enable-area')
+    const vaultManageArea = $('vault-manage-area')
+    const vaultEnableInput = $('vault-enable-pw')
+    const vaultEnableBtn = $('vault-enable-btn')
+    const vaultManageInput = $('vault-manage-pw')
+    const vaultDisableBtn = $('vault-disable-btn')
+    const vaultMsg = $('vault-msg')
+
+    function updateVaultUI() {
+      // Header prompt
+      if (_vaultActive && !_vaultUnlocked && !_vaultSkipped) {
+        vaultPrompt.style.display = 'flex'
+      } else {
+        vaultPrompt.style.display = 'none'
+      }
+      // Settings panel — three states: ON (unlocked), SKIPPED, OFF (no vault)
+      if (_vaultSkipped) {
+        vaultStatusDisplay.textContent = 'SKIPPED'
+        vaultStatusDisplay.style.color = '#d29922'
+        vaultEnableArea.style.display = 'none'
+        vaultManageArea.style.display = 'none'
+      } else if (_vaultActive) {
+        vaultStatusDisplay.textContent = _vaultUnlocked ? 'ON' : 'LOCKED'
+        vaultStatusDisplay.style.color = _vaultUnlocked ? '#3fb950' : '#8b949e'
+        vaultEnableArea.style.display = 'none'
+        vaultManageArea.style.display = 'block'
+      } else {
+        vaultStatusDisplay.textContent = 'OFF'
+        vaultStatusDisplay.style.color = '#8b949e'
+        vaultEnableArea.style.display = 'block'
+        vaultManageArea.style.display = 'none'
+      }
+      // Refresh identity section if available and initialized
+      if (window._identityReady) renderIdentity()
+      vaultMsg.textContent = ''
+    }
+
+    // Check crypto.subtle availability
+    if (!window.crypto || !window.crypto.subtle) {
+      console.warn('Web Crypto API not available — vault disabled')
+      vaultEnableBtn.disabled = true
+      vaultEnableBtn.textContent = 'Unavailable'
+    }
+
+    // Header password prompt
+    async function handleVaultDecrypt() {
+      const pw = vaultPwInput.value
+      if (!pw) return
+      vaultError.textContent = ''
+      try {
+        const blob = _getVaultCookieValue()
+        if (!blob) throw new Error('no vault')
+        _vaultSettings = await vaultDecrypt(blob, pw)
+        _vaultUnlocked = true
+        _vaultSkipped = false  // user changed their mind → clear skip state
+        _vaultPassword = pw  // FR-021: retain for auto-reencrypt
+        vaultPwInput.value = ''
+        updateVaultUI()
+        log('🔒 Vault decrypted', 'log-ok')
+        refreshSettingsUI()  // FR-007: re-read vault settings into UI
+        _vaultGateResolve?.()  // FR-007: unblock boot
+      } catch (e) {
+        vaultError.textContent = 'Incorrect password'
+        vaultPwInput.value = ''
+        vaultPwInput.focus()
+      }
+    }
+
+    vaultDecryptBtn.addEventListener('click', handleVaultDecrypt)
+    vaultPwInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') handleVaultDecrypt()
+    })
+    vaultSkipBtn.addEventListener('click', () => {
+      vaultPwInput.value = ''
+      vaultError.textContent = ''
+      _vaultSkipped = true  // FR-009: vault exists but user chose defaults
+      updateVaultUI()  // hide prompt, show SKIPPED in settings
+      log('Using default settings (vault skipped)')
+      _vaultGateResolve?.()  // FR-007: unblock boot with defaults
+    })
+
+    // Settings panel: enable encryption
+    vaultEnableBtn.addEventListener('click', async () => {
+      const pw = vaultEnableInput.value
+      if (!pw || pw.length < 8) {
+        vaultMsg.textContent = 'Password must be at least 8 characters'
+        return
+      }
+      vaultMsg.textContent = ''
+      try {
+        await vaultEnable(pw)
+        vaultEnableInput.value = ''
+        updateVaultUI()
+        log('🔒 Vault enabled', 'log-ok')
+      } catch (e) {
+        vaultMsg.textContent = 'Error: ' + e.message
+      }
+    })
+
+    // Settings panel: disable encryption
+    vaultDisableBtn.addEventListener('click', async () => {
+      const pw = vaultManageInput.value
+      if (!pw) return
+      vaultMsg.textContent = ''
+      // Spec 040: warn if identity exists
+      const nsec = peckGetSetting('peck_nsec')
+      if (nsec && !vaultDisableBtn.dataset.confirmed) {
+        vaultMsg.textContent = '⚠ Disabling will delete your Nostr identity. Click again to confirm.'
+        vaultDisableBtn.dataset.confirmed = '1'
+        setTimeout(() => { delete vaultDisableBtn.dataset.confirmed }, 5000)
+        return
+      }
+      delete vaultDisableBtn.dataset.confirmed
+      try {
+        await vaultDisable(pw)
+        vaultManageInput.value = ''
+        updateVaultUI()
+        log('Vault disabled — settings stored as plaintext cookies')
+      } catch (e) {
+        vaultMsg.textContent = 'Incorrect password'
+      }
+    })
+
+    // Initial vault UI
+    updateVaultUI()
+
+    // ─── Spec 040: Nostr Identity ──────────────────────────────
+    const identityContent = $('identity-content')
+    let _identityRegenArmed = false
+    let _identityRegenTimer = null
+    let _identityRevealTimer = null
+    let _identityNsecRevealed = false
+
+    function renderIdentity() {
+      const nsec = peckGetSetting('peck_nsec')
+      const vaultOn = _vaultActive && _vaultUnlocked
+      const vaultOff = !_vaultActive
+      const vaultSkipped = _vaultSkipped
+
+      // Vault OFF or SKIPPED: show ephemeral session keys (read-only, no Generate/Regenerate)
+      if (vaultOff || vaultSkipped) {
+        if (!_ephemeralNsec) {
+          const hint = vaultSkipped
+            ? 'Connecting… session identity will appear here.'
+            : 'Connecting… session identity will appear here.'
+          identityContent.innerHTML = `<div class="settings-hint">${hint}</div>`
+          return
+        }
+        const epNsecDisplay = _identityNsecRevealed ? _ephemeralNsec : '••••••••••••••••'
+        const epNsecBtnLabel = _identityNsecRevealed ? 'Hide' : 'Reveal'
+        const label = vaultSkipped
+          ? 'Ephemeral session identity (not persisted).'
+          : 'Ephemeral session identity. Enable encryption to persist.'
+        // W1 fix: never embed nsec in DOM attributes — use JS closure for copy
+        const _revealNsecForCopy = _identityNsecRevealed ? _ephemeralNsec : null
+        identityContent.innerHTML = `
+          <div class="settings-hint" style="color:#d29922;margin-bottom:6px">${label}</div>
+          <div style="margin-bottom:6px">
+            <div style="font-family:monospace;font-size:12px;color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px" title="${_ephemeralNpub}">${_ephemeralNpub}</div>
+            <button class="id-copy-btn settings-btn" data-label="Copy npub" style="font-size:11px;padding:2px 8px" data-copy="${_ephemeralNpub}">Copy npub</button>
+          </div>
+          <div style="margin-bottom:6px">
+            <div style="font-family:monospace;font-size:12px;color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px">${epNsecDisplay}</div>
+            <div style="display:flex;gap:4px">
+              <button id="id-reveal-btn" class="settings-btn" style="font-size:11px;padding:2px 8px">${epNsecBtnLabel}</button>
+              <button id="id-copy-nsec-btn" class="settings-btn" data-label="Copy nsec" style="font-size:11px;padding:2px 8px" ${_identityNsecRevealed ? '' : 'disabled'}>Copy nsec</button>
+            </div>
+          </div>
+          ${_identityNsecRevealed ? '<div class="settings-hint" style="color:#d29922">⚠ This is your private key. Never share it.</div>' : ''}`
+
+        $('id-reveal-btn')?.addEventListener('click', toggleReveal)
+        // W1 fix: npub copy from data-copy (public key is safe); nsec copy from JS closure (private)
+        identityContent.querySelectorAll('.id-copy-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            if (btn.dataset.copy) {
+              navigator.clipboard.writeText(btn.dataset.copy)
+              const origLabel = btn.dataset.label || 'Copy'
+              btn.textContent = '✓'
+              setTimeout(() => { btn.textContent = origLabel }, 1500)
+            }
+          })
+        })
+        $('id-copy-nsec-btn')?.addEventListener('click', () => {
+          if (!_revealNsecForCopy) return
+          navigator.clipboard.writeText(_revealNsecForCopy)
+          const btn = $('id-copy-nsec-btn')
+          btn.textContent = '✓'
+          setTimeout(() => { btn.textContent = 'Copy nsec' }, 1500)
+        })
+        return
+      }
+
+      if (!vaultOn) {
+        identityContent.innerHTML = '<div class="settings-hint">Unlock vault to access your identity.</div>'
+        return
+      }
+
+      if (!nsec) {
+        identityContent.innerHTML = `
+          <div class="settings-hint">No identity yet.</div>
+          <button id="id-gen-btn" class="settings-btn" style="margin-top:6px">🔄 Generate</button>`
+        $('id-gen-btn').addEventListener('click', handleGenerate)
+        return
+      }
+
+      // Derive npub from nsec
+      let npub = ''
+      try { npub = deriveNpub(nsec) } catch(e) { /* invalid nsec */ }
+
+      if (!npub) {
+        identityContent.innerHTML = `
+          <div class="settings-hint" style="color:#f85149">Invalid identity in vault.</div>
+          <button id="id-gen-btn" class="settings-btn" style="margin-top:6px">🔄 Regenerate</button>`
+        $('id-gen-btn').addEventListener('click', handleGenerate)
+        return
+      }
+
+      const nsecDisplay = _identityNsecRevealed ? nsec : '••••••••••••••••'
+      const nsecBtnLabel = _identityNsecRevealed ? 'Hide' : 'Reveal'
+      // W1 fix: never embed nsec in DOM attributes — use JS closure for copy
+      const _vaultNsecForCopy = _identityNsecRevealed ? nsec : null
+
+      identityContent.innerHTML = `
+        <div style="margin-bottom:6px">
+          <div style="font-family:monospace;font-size:12px;color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px" title="${npub}">${npub}</div>
+          <button class="id-copy-btn settings-btn" data-copy="${npub}" data-label="Copy npub" style="font-size:11px;padding:2px 8px">Copy npub</button>
+        </div>
+        <div style="margin-bottom:6px">
+          <div style="font-family:monospace;font-size:12px;color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px">${nsecDisplay}</div>
+          <div style="display:flex;gap:4px">
+            <button id="id-reveal-btn" class="settings-btn" style="font-size:11px;padding:2px 8px">${nsecBtnLabel}</button>
+            <button id="id-copy-nsec-btn" class="settings-btn" data-label="Copy nsec" style="font-size:11px;padding:2px 8px" ${_identityNsecRevealed ? '' : 'disabled'}>Copy nsec</button>
+          </div>
+        </div>
+        ${_identityNsecRevealed ? '<div class="settings-hint" style="color:#d29922">⚠ This is your private key. Never share it.</div>' : ''}
+        <button id="id-regen-btn" class="settings-btn" style="margin-top:2px${_identityRegenArmed ? ';background:#d29922' : ''}">${_identityRegenArmed ? '⚠ This destroys your current identity. Click to confirm.' : '🔄 Regenerate'}</button>`
+
+      // Wire buttons
+      $('id-reveal-btn')?.addEventListener('click', toggleReveal)
+      // W1 fix: npub copy from data-copy (public key is safe); nsec copy from JS closure (private)
+      identityContent.querySelectorAll('.id-copy-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (btn.dataset.copy) {
+            navigator.clipboard.writeText(btn.dataset.copy)
+            const origLabel = btn.dataset.label || 'Copy'
+            btn.textContent = '✓'
+            setTimeout(() => { btn.textContent = origLabel }, 1500)
+          }
+        })
+      })
+      $('id-copy-nsec-btn')?.addEventListener('click', () => {
+        if (!_vaultNsecForCopy) return
+        navigator.clipboard.writeText(_vaultNsecForCopy)
+        const btn = $('id-copy-nsec-btn')
+        btn.textContent = '✓'
+        setTimeout(() => { btn.textContent = 'Copy nsec' }, 1500)
+      })
+      $('id-regen-btn')?.addEventListener('click', handleRegenerate)
+    }
+
+    function handleGenerate() {
+      const { nsec, npub } = generateKeypair()
+      peckSetSetting('peck_nsec', nsec)  // triggers vault auto-reencrypt
+      _identityRegenArmed = false
+      renderIdentity()
+      log('🔑 Nostr identity generated')
+    }
+
+    function handleRegenerate() {
+      if (!_identityRegenArmed) {
+        // First click — arm
+        _identityRegenArmed = true
+        renderIdentity()
+        clearTimeout(_identityRegenTimer)
+        _identityRegenTimer = setTimeout(() => {
+          _identityRegenArmed = false
+          renderIdentity()
+        }, 5000)
+        return
+      }
+      // Second click within 5s — regenerate
+      clearTimeout(_identityRegenTimer)
+      _identityRegenArmed = false
+      handleGenerate()
+    }
+
+    function toggleReveal() {
+      _identityNsecRevealed = !_identityNsecRevealed
+      if (_identityNsecRevealed) {
+        clearTimeout(_identityRevealTimer)
+        _identityRevealTimer = setTimeout(() => {
+          _identityNsecRevealed = false
+          renderIdentity()
+        }, 10000)
+      }
+      renderIdentity()
+    }
+
+    renderIdentity()
+    window._identityReady = true
     function updateIpVersionControl() {
       const pref = peckGetSetting('peck_ip_preference') || 'both'
       ipVersionControl.querySelectorAll('button').forEach(btn => {
@@ -1001,9 +1578,10 @@
       relayContainer.innerHTML = urls.map((url) => {
         const state = relayStates[url]
         const dotStyle = state === 'connected' ? 'background:#3fb950' : state === 'failed' ? 'background:#f85149' : 'background:#6e7681'
+        const safeUrl = escapeHtml(url)
         return `<div class="relay-item">
           <span class="relay-status-dot" style="${dotStyle}"></span>
-          <input type="text" class="relay-url-input" value="${url}" placeholder="wss://..." spellcheck="false">
+          <input type="text" class="relay-url-input" value="${safeUrl}" placeholder="wss://..." spellcheck="false">
           ${urls.length > 1 ? '<button class="relay-btn relay-remove" type="button">−</button>' : ''}
           <button class="relay-btn relay-add" type="button">+</button>
         </div>`
@@ -1083,7 +1661,9 @@
       container.innerHTML = sorted.map(({ip, flag, cc, label, connected, cls}) => {
         const rowClass = connected ? 'ip-row connected' : `ip-row ${cls || 'global'}`
         const typeLabel = connected ? '◆ selected' : label || ''
-        return `<div class="${rowClass}">${flag} <span class="ip-text">${ip}</span>${typeLabel ? `<span class="ip-type">${typeLabel}</span>` : ''}</div>`
+        const safeIp = escapeHtml(ip)
+        const safeType = escapeHtml(typeLabel)
+        return `<div class="${rowClass}">${flag} <span class="ip-text">${safeIp}</span>${safeType ? `<span class="ip-type">${safeType}</span>` : ''}</div>`
       }).join('')
       // Add IP version badge
       let badge = ''
@@ -1254,6 +1834,11 @@
           if (msg?.type === 'REGISTERED') {
             log('SW ↔ tunnel channel established')
             resolve()
+            return
+          }
+          if (msg?.type === 'SW_LOG') {
+            // Spec 041: Cookie sanitization logs from SW
+            for (const line of msg.lines) log(line)
             return
           }
           if (msg?.type === 'TUNNEL_REQUEST') {
@@ -1616,7 +2201,7 @@
         const formData = new FormData(form)
         const body = new URLSearchParams(formData)
         const res = await tunnel.request({
-          port: 80, method: 'POST', path: action,
+          port: currentPort || defaultPort, method: 'POST', path: action,
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new TextEncoder().encode(body.toString())
         })
@@ -1818,8 +2403,9 @@
     /**
      * Spec 033: handle terms-challenge from the daemon.
      * Shows a modal with terms text. User clicks Accept → transport.acceptTerms(version).
-     * If auto_accept_terms is enabled (localStorage), acceptTerms is called immediately
-     * (handled in native-transport.js — this callback only fires when NOT auto-accepted).
+     * If auto_accept_terms is enabled, acceptTerms is called immediately
+     * (auto_accept_terms is resolved via peckGetSetting by the caller and passed
+     * to connect() → NativeTransport — NOT read from localStorage directly).
      *
      * Spec 034 addition: once the user has accepted a version in this session
      * (sessionStorage), subsequent reconnects auto-accept the same version
@@ -1961,6 +2547,7 @@
           onAnswerSdp: parseAnswerSdp,
           onOwnIps: handleOwnIpsFromStun,
           ipPreference: peckGetSetting('peck_ip_preference') || 'both',
+          autoAcceptTerms: peckGetSetting('peck_auto_accept_terms') === 'true',
           onDebug: debugHandler
         })
 
@@ -2081,11 +2668,19 @@
           onAnswerSdp: parseAnswerSdp,
           onOwnIps: handleOwnIpsFromStun,
           ipPreference: peckGetSetting('peck_ip_preference') || 'both',
+          autoAcceptTerms: peckGetSetting('peck_auto_accept_terms') === 'true',
           onDebug: debugHandler
         })
+        _ephemeralNpub = tunnel.ephemeralNpub  // Spec 040: expose for identity display
+        _ephemeralNsec = tunnel.ephemeralNsec  // Spec 040: expose for identity display
         tunnelReady = true
         setStatus('connected', truncateNpub(npub))
         log('Peer connected', 'log-ok')
+
+        // Spec 040: refresh identity section now that ephemeral keys are available
+        // (needed for vault-skipped and vault-off states where renderIdentity ran
+        // before connect() set _ephemeralNsec)
+        if (window._identityReady) renderIdentity()
 
         // Setup SW for sub-assets (CSS, JS, images, fetch)
         const sw = await setupServiceWorker()
@@ -2170,6 +2765,24 @@
       }
     })
 
+    // ─── Spec 039 FR-007: Refresh all settings-dependent UI after vault unlock ───
+    // During boot, while the vault is locked, peckGetSetting returns defaults.
+    // After decrypt (or skip), this re-reads all vault settings and refreshes
+    // every UI element that was initialized with stale default values.
+    function refreshSettingsUI() {
+      // Relays input
+      restoreSavedRelays()
+      // Reconnect mode (variable + UI)
+      reconnectMode = peckGetSetting('peck_reconnect_mode') || 'smart'
+      updateReconnectControl()
+      // Auto-accept terms toggle
+      updateAutoAcceptToggle()
+      // IP version preference
+      updateIpVersionControl()
+      // Identity section
+      if (window._identityReady) renderIdentity()
+    }
+
     // ─── Spec 037: Boot (config → gate → connect) ───
     loadServerConfig().then(async () => {
       // Populate default relays into the hidden input
@@ -2181,6 +2794,13 @@
       // Mandatory info gate
       if (needsInfoGate() && localStorage.getItem('peck-info-accepted') !== 'true') {
         await showMandatoryGate()
+      }
+
+      // Spec 039 FR-007: Wait for vault decrypt/skip before connecting.
+      // Without this, peck connects with default settings even though
+      // the user's actual settings are still locked in the vault.
+      if (_vaultActive) {
+        await _vaultGate
       }
 
       // Boot peck (original logic)

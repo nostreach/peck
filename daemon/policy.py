@@ -39,88 +39,11 @@ from typing import Any, Iterable, Optional
 
 import yaml
 
+from bech32m import npub_to_pubkey_hex, normalize_pubkey as normalise_pubkey
+
 log = logging.getLogger("peck.policy")
 
-# ─── Bech32m decoder (npub → hex) ──────────────────────────────────────
-# Mirror of route_table.py's encoder. We need both directions because
-# the policy file accepts both npub1… and hex forms in `pubkeys:` lists.
-
-_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-_BECH32M_CONST = 0x2bc830a3
-
-
-def _bech32_polymod(values: list[int]) -> int:
-    gen = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
-    chk = 1
-    for v in values:
-        b = chk >> 25
-        chk = (chk & 0x1ffffff) << 5 ^ v
-        for i in range(5):
-            chk ^= gen[i] if ((b >> i) & 1) else 0
-    return chk
-
-
-def _bech32_hrp_expand(hrp: str) -> list[int]:
-    return [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp]
-
-
-def _bech32_verify_checksum(hrp: str, data: list[int]) -> bool:
-    return _bech32_polymod(_bech32_hrp_expand(hrp) + data) == _BECH32M_CONST
-
-
-def _convertbits(data: Iterable[int], frombits: int, tobits: int, pad: bool = True) -> list[int]:
-    acc = 0
-    bits = 0
-    ret: list[int] = []
-    maxv = (1 << tobits) - 1
-    max_acc = (1 << (frombits + tobits - 1)) - 1
-    for value in data:
-        if value < 0 or (value >> frombits):
-            raise ValueError("invalid bytes")
-        acc = ((acc << frombits) | value) & max_acc
-        bits += frombits
-        while bits >= tobits:
-            bits -= tobits
-            ret.append((acc >> bits) & maxv)
-    if pad:
-        if bits:
-            ret.append((acc << (tobits - bits)) & maxv)
-    elif bits >= frombits or ((acc << (tobits - bits)) & maxv):
-        raise ValueError("invalid padding")
-    return ret
-
-
-def npub_to_pubkey_hex(npub: str) -> str:
-    """Decode a Nostr npub (Bech32m) to a 32-byte x-only pubkey hex string."""
-    if npub.count("1") < 1:
-        raise ValueError(f"invalid npub: no separator: {npub[:20]}…")
-    hrp, _, data_part = npub.rpartition("1")
-    if hrp != "npub":
-        raise ValueError(f"invalid npub hrp: {hrp!r} (expected 'npub')")
-    data = [_BECH32_CHARSET.find(c) for c in data_part]
-    if any(d < 0 for d in data):
-        raise ValueError(f"invalid character in npub: {npub[:20]}…")
-    if not _bech32_verify_checksum(hrp, data):
-        raise ValueError(f"checksum failed for npub: {npub[:20]}…")
-    # Strip 6-char checksum
-    decoded = _convertbits(data[:-6], 5, 8, pad=False)
-    if len(decoded) != 32:
-        raise ValueError(f"npub decoded to {len(decoded)} bytes, expected 32")
-    return bytes(decoded).hex()
-
-
-def normalise_pubkey(p: str) -> str:
-    """Accept npub1… or hex (64 chars); return 64-char lowercase hex."""
-    p = p.strip().lower()
-    if p.startswith("npub1"):
-        return npub_to_pubkey_hex(p)
-    if len(p) == 64:
-        try:
-            bytes.fromhex(p)
-            return p
-        except ValueError:
-            pass
-    raise ValueError(f"invalid pubkey: {p[:40]}…")
+# All Bech32m functions now live in bech32m.py (CQ-3 dedup).
 
 
 # ─── Data classes ──────────────────────────────────────────────────────

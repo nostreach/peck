@@ -24,7 +24,6 @@ Run (inside peck netns):
 import argparse
 import asyncio
 import gc
-import hashlib
 import ipaddress
 import json
 import logging
@@ -33,14 +32,12 @@ import random
 import re
 import secrets
 import socket
-import struct
 import subprocess
 import time
 from typing import Optional
 
 import aiohttp
 import aioice.ice
-import coincurve
 from aiortc import RTCPeerConnection, RTCSessionDescription
 
 # NIP-44 implementation (validated against official test vectors, 104/104 pass)
@@ -49,6 +46,9 @@ from nip44 import encrypt as nip44_encrypt, decrypt as nip44_decrypt
 # Spec 024: Multi-Level Subdomain Routing
 from route_table import RouteTable, pubkey_hex_to_npub
 from ports import PortsMap, parse_path_prefix, load_ports_config, from_ports_legacy, PortsConfigError
+
+# WireGuard management helpers (extracted from daemon.py)
+from wg_manager import get_connected_wg_ips, pick_wg_pair
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,150 +64,20 @@ log = logging.getLogger("peck")
 _DAEMON_INSTANCE: dict = {}
 
 
-# ─── Binary stream protocol (mirror of src/protocol.js) ─────────────────────
+# ─── Binary stream protocol + HTTP helpers (extracted to protocol.py) ───────
 
-MSG_OPEN = 0x00
-MSG_DATA = 0x01
-MSG_CLOSE = 0x02
-MSG_RST = 0x03
-HEADER_SIZE = 5  # 2 + 2 + 1
-
-
-def encode_frame(stream_id: int, port: int, msg_type: int, payload: bytes = b"") -> bytes:
-    """Encode a peck protocol frame: [StreamID:2][Port:2][Type:1][Payload:var]."""
-    return struct.pack(">HHB", stream_id, port, msg_type) + payload
+from protocol import (
+    MSG_OPEN, MSG_DATA, MSG_CLOSE, MSG_RST, HEADER_SIZE,
+    encode_frame, decode_frame,
+    STATUS_TEXTS,
+    parse_http_request, compose_http_response,
+    NOT_FOUND_RESPONSE, BAD_REQUEST_RESPONSE,
+)
 
 
-def decode_frame(frame: bytes) -> tuple:
-    """Decode a peck protocol frame. Returns (stream_id, port, type, payload)."""
-    if len(frame) < HEADER_SIZE:
-        raise ValueError(f"Frame too short: {len(frame)} bytes")
-    stream_id, port, msg_type = struct.unpack(">HHB", frame[:HEADER_SIZE])
-    payload = frame[HEADER_SIZE:]
-    return stream_id, port, msg_type, payload
+# ─── secp256k1 pubkey helpers (extracted to crypto_helpers.py) ──────────────
 
-
-# ─── HTTP parsing/composition (mirror of src/server.js) ─────────────────────
-
-STATUS_TEXTS = {
-    200: "OK", 201: "Created", 204: "No Content",
-    301: "Moved Permanently", 302: "Found", 304: "Not Modified",
-    400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
-    500: "Internal Server Error", 502: "Bad Gateway", 503: "Service Unavailable",
-}
-
-
-def parse_http_request(raw: bytes) -> dict:
-    """Parse raw HTTP/1.1 request bytes into method, path, headers, body."""
-    sep = raw.find(b"\r\n\r\n")
-    if sep < 0:
-        header_text = raw.decode("latin1")
-        body = b""
-    else:
-        header_text = raw[:sep].decode("latin1")
-        body = raw[sep + 4:]
-
-    lines = header_text.split("\r\n")
-    if not lines or not lines[0]:
-        return {"method": "GET", "path": "/", "headers": {}, "body": None}
-
-    first = lines[0].split(" ", 2)
-    method = first[0] if len(first) > 0 else "GET"
-    path = first[1] if len(first) > 1 else "/"
-
-    headers = {}
-    for line in lines[1:]:
-        colon = line.find(":")
-        if colon > 0:
-            key = line[:colon].strip()
-            value = line[colon + 1:].strip()
-            headers[key] = value
-
-    return {
-        "method": method,
-        "path": path,
-        "headers": headers,
-        "body": body if body else None,
-    }
-
-
-def compose_http_response(status: int, headers: dict, body: bytes) -> bytes:
-    """Compose a raw HTTP/1.1 response.
-
-    Normalisation: if the backend used `Transfer-Encoding: chunked`, we have
-    already de-chunked the body into `body`. We must strip the chunked header
-    (otherwise the client receives both Transfer-Encoding AND Content-Length,
-    which is HTTP/1.1-illegal and causes the client to misparse the body —
-    manifests as broken image/SVG blobs with naturalWidth=0).
-    """
-    status_text = STATUS_TEXTS.get(status, "OK")
-    head = f"HTTP/1.1 {status} {status_text}\r\n"
-
-    seen = set()
-    for key, value in headers.items():
-        # Skip Transfer-Encoding — we always send a de-chunked body with
-        # explicit Content-Length below.
-        if key.lower() == "transfer-encoding":
-            continue
-        head += f"{key}: {value}\r\n"
-        seen.add(key.lower())
-    if "content-length" not in seen:
-        head += f"Content-Length: {len(body)}\r\n"
-    head += "\r\n"
-
-    return head.encode("latin1") + body
-
-
-# ─── Constant-size 404 response (Spec 024 FR-008: anti-enumeration) ────────
-
-_404_BODY = b"404 Not Found\n"
-_404_HEADERS = {
-    "Content-Type": "text/plain; charset=utf-8",
-    "Content-Length": str(len(_404_BODY)),
-    "Connection": "close",
-}
-NOT_FOUND_RESPONSE = compose_http_response(404, _404_HEADERS, _404_BODY)
-
-_400_BODY = b"400 Bad Request\n"
-_400_HEADERS = {
-    "Content-Type": "text/plain; charset=utf-8",
-    "Content-Length": str(len(_400_BODY)),
-    "Connection": "close",
-}
-BAD_REQUEST_RESPONSE = compose_http_response(400, _400_HEADERS, _400_BODY)
-
-
-# ─── secp256k1 pubkey helpers ───────────────────────────────────────────────
-
-def get_pubkey(privkey_hex: str) -> str:
-    """Derive x-only pubkey (32 bytes / 64 hex) from privkey."""
-    sk = coincurve.PrivateKey(bytes.fromhex(privkey_hex))
-    return sk.public_key.format(compressed=True)[1:].hex()
-
-
-# ─── NIP-01 event building ──────────────────────────────────────────────────
-
-def make_event(privkey_hex: str, recipient_pubkey: str, content: str, kind: int = 4) -> dict:
-    """Create and sign a Nostr event (BIP-340 Schnorr signature)."""
-    pub = get_pubkey(privkey_hex)
-    created_at = int(time.time())
-    tags = [["p", recipient_pubkey]] if kind == 4 else []
-
-    canonical = json.dumps([0, pub, created_at, kind, tags, content], separators=(",", ":"))
-    event_id = hashlib.sha256(canonical.encode()).hexdigest()
-
-    sk = coincurve.PrivateKey(bytes.fromhex(privkey_hex))
-    sig_bytes = sk.sign_schnorr(bytes.fromhex(event_id))
-
-    return {
-        "kind": kind,
-        "content": content,
-        "tags": tags,
-        "created_at": created_at,
-        "pubkey": pub,
-        "id": event_id,
-        "sig": sig_bytes.hex(),
-    }
+from crypto_helpers import get_pubkey, make_event, load_nsec, _nsec_to_hex
 
 
 # ─── WebRTC peer session ────────────────────────────────────────────────────
@@ -646,6 +516,53 @@ class PeerSession:
         elif msg_type in (MSG_CLOSE, MSG_RST):
             self.streams.pop(stream_id, None)
 
+    def _resolve_port_and_path(self, req: dict, port: int) -> tuple[int, str]:
+        """Spec 029: Resolve effective port and path from path-prefix or wire-port.
+        Returns (effective_port, effective_path). Raises ValueError on invalid port prefix."""
+        if self.daemon.ports_map is None:
+            return port, req["path"]
+        try:
+            parsed_port, parsed_path = parse_path_prefix(
+                req["path"], self.daemon.ports_map.default_port
+            )
+        except ValueError:
+            raise
+        path_has_prefix = req["path"].startswith("/_p")
+        if path_has_prefix:
+            return parsed_port, parsed_path
+        elif port in self.daemon.ports_map:
+            return port, req["path"]
+        else:
+            return self.daemon.ports_map.default_port, req["path"]
+
+    def _send_http_error(self, stream_id: int, port: int, response: bytes):
+        """Send error response + close + cleanup stream."""
+        self._send(encode_frame(stream_id, port, MSG_DATA, response))
+        self._send(encode_frame(stream_id, port, MSG_CLOSE))
+        self.streams.pop(stream_id, None)
+
+    async def _send_http_request(self, stream_id: int, port: int, url: str, req: dict, log_prefix: str):
+        """Shared HTTP request execution + response streaming (CQ-2 DRY)."""
+        body = req["body"] if req["body"] else None
+        try:
+            async with self.http_session.request(
+                req["method"], url,
+                headers=req["headers"],
+                data=body,
+                allow_redirects=False,
+            ) as resp:
+                body_bytes = await resp.read()
+                resp_headers = {k: v for k, v in resp.headers.items()}
+                raw_response = compose_http_response(resp.status, resp_headers, body_bytes)
+                self._send(encode_frame(stream_id, port, MSG_DATA, raw_response))
+                self._send(encode_frame(stream_id, port, MSG_CLOSE))
+        except Exception as e:
+            log.error(f"proxy error: {e}")
+            err_msg = str(e).encode("latin1")
+            self._send(encode_frame(stream_id, port, MSG_RST, err_msg))
+        finally:
+            self.streams.pop(stream_id, None)
+
     async def _proxy_request(self, stream_id: int, port: int, payload: bytes):
         # ─── Spec 024: Multi-Level Subdomain Routing ───────────────────
         # If a route table is configured, resolve the backend from the
@@ -656,177 +573,59 @@ class PeerSession:
 
             # FR-017: RFC 1035 length sanity → 400
             if len(host_header) > 253:
-                self._send(encode_frame(stream_id, port, MSG_DATA, BAD_REQUEST_RESPONSE))
-                self._send(encode_frame(stream_id, port, MSG_CLOSE))
-                self.streams.pop(stream_id, None)
+                self._send_http_error(stream_id, port, BAD_REQUEST_RESPONSE)
                 return
 
             # ─── Spec 029: Path-Prefix Multi-Port ──────────────────────
-            # The browser may or may not strip the /_p<port>/ prefix before
-            # sending. See the legacy-mode branch below for the full strategy.
-            effective_port = port
-            effective_path = req["path"]
-            if self.daemon.ports_map is not None:
-                try:
-                    parsed_port, parsed_path = parse_path_prefix(
-                        req["path"], self.daemon.ports_map.default_port
-                    )
-                except ValueError:
-                    # Out-of-range port in /_p<port>/
-                    self._send(encode_frame(stream_id, port, MSG_DATA, BAD_REQUEST_RESPONSE))
-                    self._send(encode_frame(stream_id, port, MSG_CLOSE))
-                    self.streams.pop(stream_id, None)
-                    return
-                path_has_prefix = req["path"].startswith("/_p")
-                if path_has_prefix:
-                    effective_port = parsed_port
-                    effective_path = parsed_path
-                elif port in self.daemon.ports_map:
-                    # Trust wire-port (peck-aware client that already stripped)
-                    effective_port = port
-                    effective_path = req["path"]
-                else:
-                    effective_port = self.daemon.ports_map.default_port
-                    effective_path = req["path"]
+            try:
+                effective_port, effective_path = self._resolve_port_and_path(req, port)
+            except ValueError:
+                self._send_http_error(stream_id, port, BAD_REQUEST_RESPONSE)
+                return
 
             backend_url = self.route_table.resolve_host(host_header)
             if backend_url is None:
-                # FR-008: constant-size 404 (anti-enumeration)
                 log.info(f"🌐 {req['method']} {req['path'][:60]} Host={host_header[:40]} → 404 (no route)")
-                self._send(encode_frame(stream_id, port, MSG_DATA, NOT_FOUND_RESPONSE))
-                self._send(encode_frame(stream_id, port, MSG_CLOSE))
-                self.streams.pop(stream_id, None)
+                self._send_http_error(stream_id, port, NOT_FOUND_RESPONSE)
                 return
 
             # Spec 029: if path-prefix port is not in ports_map, FR-005 → 404
             if self.daemon.ports_map is not None and effective_port not in self.daemon.ports_map:
                 log.info(f"🌐 {req['method']} {req['path'][:60]} → 404 (port {effective_port} not configured)")
-                self._send(encode_frame(stream_id, port, MSG_DATA, NOT_FOUND_RESPONSE))
-                self._send(encode_frame(stream_id, port, MSG_CLOSE))
-                self.streams.pop(stream_id, None)
+                self._send_http_error(stream_id, port, NOT_FOUND_RESPONSE)
                 return
 
             url = backend_url.rstrip("/") + effective_path
             log.info(f"🌐 {req['method']} {req['path'][:60]} Host={host_header[:40]} port={effective_port} → {backend_url}")
-
-            body = req["body"] if req["body"] else None
-            try:
-                async with self.http_session.request(
-                    req["method"], url,
-                    headers=req["headers"],
-                    data=body,
-                    allow_redirects=False,
-                ) as resp:
-                    body_bytes = await resp.read()
-                    resp_headers = {k: v for k, v in resp.headers.items()}
-                    raw_response = compose_http_response(resp.status, resp_headers, body_bytes)
-
-                    self._send(encode_frame(stream_id, port, MSG_DATA, raw_response))
-                    self._send(encode_frame(stream_id, port, MSG_CLOSE))
-            except Exception as e:
-                log.error(f"proxy error: {e}")
-                err_msg = str(e).encode("latin1")
-                self._send(encode_frame(stream_id, port, MSG_RST, err_msg))
-            finally:
-                self.streams.pop(stream_id, None)
+            await self._send_http_request(stream_id, port, url, req, f"{req['method']} {req['path'][:60]}")
             return
 
         # ─── Spec 029: Path-Prefix Multi-Port (legacy --ports mode) ────
-        # The browser may or may not strip the /_p<port>/ prefix before
-        # sending. Two cases:
-        #   1. Peck-aware client: strip client-side, sends wire-port=8082
-        #      with path '/'. Trust the wire-port.
-        #   2. Raw HTTP client (curl, future native CLI): no stripping,
-        #      sends wire-port=80 and path '/_p8082/foo'. Parse the prefix.
-        # Strategy: if the path has /_p<port>/, use that port (case 2).
-        # Otherwise, use the wire-port (case 1) if it's in ports_map;
-        # fall back to default_port for unknown wire-ports (backwards-compat).
         if self.daemon.ports_map is not None:
             req = parse_http_request(payload)
             try:
-                prefix_port, prefix_path = parse_path_prefix(
-                    req["path"], self.daemon.ports_map.default_port
-                )
+                effective_port, effective_path = self._resolve_port_and_path(req, port)
             except ValueError:
-                self._send(encode_frame(stream_id, port, MSG_DATA, BAD_REQUEST_RESPONSE))
-                self._send(encode_frame(stream_id, port, MSG_CLOSE))
-                self.streams.pop(stream_id, None)
+                self._send_http_error(stream_id, port, BAD_REQUEST_RESPONSE)
                 return
-            # Detect whether path actually had a prefix (vs. defaulted)
-            path_has_prefix = req["path"].startswith("/_p")
-            if path_has_prefix:
-                effective_port = prefix_port
-                effective_path = prefix_path
-            elif port in self.daemon.ports_map:
-                # Trust wire-port (peck-aware client that already stripped)
-                effective_port = port
-                effective_path = req["path"]
-            else:
-                # Unknown wire-port, no prefix — use default
-                effective_port = self.daemon.ports_map.default_port
-                effective_path = req["path"]
 
             backend_url = self.daemon.ports_map.get(effective_port)
             if backend_url is None:
                 log.info(f"🌐 {req['method']} {req['path'][:60]} → 404 (port {effective_port} not configured)")
-                self._send(encode_frame(stream_id, port, MSG_DATA, NOT_FOUND_RESPONSE))
-                self._send(encode_frame(stream_id, port, MSG_CLOSE))
-                self.streams.pop(stream_id, None)
+                self._send_http_error(stream_id, port, NOT_FOUND_RESPONSE)
                 return
 
             url = backend_url.rstrip("/") + effective_path
             log.info(f"🌐 {req['method']} {req['path'][:60]} → {backend_url} (port={effective_port})")
-
-            body = req["body"] if req["body"] else None
-            try:
-                async with self.http_session.request(
-                    req["method"], url,
-                    headers=req["headers"],
-                    data=body,
-                    allow_redirects=False,
-                ) as resp:
-                    body_bytes = await resp.read()
-                    resp_headers = {k: v for k, v in resp.headers.items()}
-                    raw_response = compose_http_response(resp.status, resp_headers, body_bytes)
-
-                    self._send(encode_frame(stream_id, port, MSG_DATA, raw_response))
-                    self._send(encode_frame(stream_id, port, MSG_CLOSE))
-            except Exception as e:
-                log.error(f"proxy error: {e}")
-                err_msg = str(e).encode("latin1")
-                self._send(encode_frame(stream_id, port, MSG_RST, err_msg))
-            finally:
-                self.streams.pop(stream_id, None)
+            await self._send_http_request(stream_id, port, url, req, f"{req['method']} {req['path'][:60]}")
             return
 
         # ─── Legacy: port-based routing (--ports mode, pre-Spec-029) ────
         backend_url = self.port_map.get(port)
-        try:
-            req = parse_http_request(payload)
-            url = backend_url.rstrip("/") + req["path"]
-
-            log.info(f"🌐 {req['method']} {req['path'][:60]} → {backend_url}")
-
-            body = req["body"] if req["body"] else None
-            async with self.http_session.request(
-                req["method"], url,
-                headers=req["headers"],
-                data=body,
-                allow_redirects=False,
-            ) as resp:
-                body_bytes = await resp.read()
-                resp_headers = {k: v for k, v in resp.headers.items()}
-                raw_response = compose_http_response(resp.status, resp_headers, body_bytes)
-
-                self._send(encode_frame(stream_id, port, MSG_DATA, raw_response))
-                self._send(encode_frame(stream_id, port, MSG_CLOSE))
-
-        except Exception as e:
-            log.error(f"proxy error: {e}")
-            err_msg = str(e).encode("latin1")
-            self._send(encode_frame(stream_id, port, MSG_RST, err_msg))
-        finally:
-            self.streams.pop(stream_id, None)
+        req = parse_http_request(payload)
+        url = backend_url.rstrip("/") + req["path"]
+        log.info(f"🌐 {req['method']} {req['path'][:60]} → {backend_url}")
+        await self._send_http_request(stream_id, port, url, req, f"{req['method']} {req['path'][:60]}")
 
     def _send(self, data: bytes):
         if self.channel and self.state != "closed":
@@ -903,87 +702,6 @@ class PeerSession:
 
 # ─── Daemon ────────────────────────────────────────────────────────────────
 
-def get_connected_wg_ips() -> dict:
-    """Spec 034: Return IPs of WG interfaces with active handshake.
-
-    Runs `wg show all` and parses interface names + latest handshake timestamps.
-    Then maps interface names to their assigned IPs via `ip addr`.
-
-    Returns:
-        {interface_name: {"ipv4": "x.x.x.x", "ipv6": "fd00:...", "handshake_ago": seconds}}
-        Only interfaces with a handshake within the last 5 minutes are included.
-    """
-    HANDSHAKE_MAX_AGE = 300  # 5 minutes
-
-    try:
-        result = subprocess.run(
-            ["wg", "show", "all"],
-            capture_output=True, text=True, timeout=3
-        )
-        if result.returncode != 0:
-            log.warning(f"wg show all failed: {result.stderr.strip()}")
-            return {}
-    except Exception as e:
-        log.warning(f"wg show all error: {e}")
-        return {}
-
-    # Parse wg output: "interface: wgN" blocks with "latest handshake: N ago"
-    connected = {}  # iface -> handshake_ago_seconds
-    current_iface = None
-    for line in result.stdout.split("\n"):
-        m = re.match(r"interface:\s+(\S+)", line)
-        if m:
-            current_iface = m.group(1)
-            connected[current_iface] = None
-            continue
-        hm = re.search(r"latest handshake:\s+(\d+).+?ago", line)
-        if hm and current_iface:
-            connected[current_iface] = int(hm.group(1))
-
-    # Filter: only interfaces with recent handshake
-    active_ifaces = {iface for iface, age in connected.items()
-                     if age is not None and age <= HANDSHAKE_MAX_AGE}
-
-    if not active_ifaces:
-        log.warning(f"no WG interfaces with active handshake (checked: {list(connected.keys())})")
-        return {}
-
-    # Map interface → IPs via `ip addr show`
-    try:
-        result = subprocess.run(
-            ["ip", "-o", "addr", "show"],
-            capture_output=True, text=True, timeout=3
-        )
-    except Exception as e:
-        log.warning(f"ip addr show error: {e}")
-        return {}
-
-    iface_info = {}
-    for line in result.stdout.split("\n"):
-        # Format: "1630: wg0    inet 10.0.0.1/32 scope global wg0"
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        iface = parts[1]
-        if iface not in active_ifaces:
-            continue
-        if iface not in iface_info:
-            iface_info[iface] = {"ipv4": None, "ipv6": None, "handshake_ago": connected[iface]}
-
-        if parts[2] == "inet":
-            ip_cidr = parts[3]
-            ip_str = ip_cidr.split("/")[0]
-            iface_info[iface]["ipv4"] = ip_str
-        elif parts[2] == "inet6":
-            ip_cidr = parts[3]
-            ip_str = ip_cidr.split("/")[0]
-            # Skip link-local addresses
-            if not ip_str.startswith("fe80"):
-                iface_info[iface]["ipv6"] = ip_str
-
-    return iface_info
-
-
 class PeckDaemon:
     def __init__(self, privkey_hex: str, relays: list, wg_ips: list, port_mappings: dict,
                  route_table: Optional[RouteTable] = None,
@@ -993,7 +711,8 @@ class PeckDaemon:
                  ports_map: Optional["PortsMap"] = None,
                  relay_mode: bool = False,
                  relay_price: int = 0,
-                 wg_ip6s: Optional[list] = None):
+                 wg_ip6s: Optional[list] = None,
+                 rate_limiter=None):
         self.privkey = privkey_hex
         self.pubkey = get_pubkey(privkey_hex)
         self.relays = relays
@@ -1008,6 +727,8 @@ class PeckDaemon:
         self.http_session: Optional[aiohttp.ClientSession] = None
         # Event-id dedup set for multi-relay (spec 005)
         self._seen_event_ids: dict = {}  # ordered dict (FIFO) for deterministic pruning
+        # Spec 038: Rate limiter (SEC-3)
+        self.rate_limiter = rate_limiter
         # Lifecycle config (spec 021)
         self.idle_timeout = idle_timeout
         self.connect_timeout = connect_timeout
@@ -1046,60 +767,9 @@ class PeckDaemon:
     def pick_wg_pair(self, ip_preference: str = "both") -> tuple:
         """Spec 034: Pick a correlated (IPv4, IPv6) pair from a connected WG tunnel.
 
-        Filters by:
-        1. Active WireGuard handshake (within last 5 min) — prevents stale tunnel IPs
-        2. ip_preference: "ipv4" / "ipv6" / "both" — only pick tunnels with matching addresses
-
-        Graceful degradation: if no tunnel matches the preference, falls back to
-        all configured wg_ips (legacy behavior).
-
-        Returns:
-            (ipv4_str_or_None, ipv6_str_or_None)
+        Thin wrapper around wg_manager.pick_wg_pair().
         """
-        connected = get_connected_wg_ips()
-
-        if not connected:
-            # No handshake data — fall back to configured IPs
-            log.debug("no handshake data, using configured wg_ips")
-            idx = random.randint(0, len(self.wg_ips) - 1)
-            ip4 = self.wg_ips[idx]
-            ip6 = self.wg_ip6s[idx] if idx < len(self.wg_ip6s) else None
-            return (ip4, ip6)
-
-        # Build candidate list from connected tunnels
-        candidates = []
-        for iface, info in connected.items():
-            ip4 = info["ipv4"]
-            ip6 = info["ipv6"]
-
-            # Filter by ip_preference
-            if ip_preference == "ipv4" and not ip4:
-                continue
-            if ip_preference == "ipv6" and not ip6:
-                continue
-            # "both" or matched preference
-            if not ip4 and not ip6:
-                continue
-            candidates.append((ip4, ip6))
-
-        if not candidates:
-            # No tunnel matches preference — fall back to all connected
-            log.info(f"no tunnel matches ip_preference={ip_preference}, falling back to all connected")
-            for iface, info in connected.items():
-                ip4 = info["ipv4"]
-                ip6 = info["ipv6"]
-                if ip4 or ip6:
-                    candidates.append((ip4, ip6))
-
-        if not candidates:
-            # Still nothing — ultimate fallback to configured IPs
-            log.warning("no connected WG tunnels with IPs, falling back to configured wg_ips")
-            idx = random.randint(0, len(self.wg_ips) - 1)
-            ip4 = self.wg_ips[idx]
-            ip6 = self.wg_ip6s[idx] if idx < len(self.wg_ip6s) else None
-            return (ip4, ip6)
-
-        return random.choice(candidates)
+        return pick_wg_pair(self.wg_ips, self.wg_ip6s, ip_preference=ip_preference)
 
     def _on_session_dispose(self, client_pubkey: str):
         """Called by PeerSession.close() so the registry can prune."""
@@ -1113,12 +783,20 @@ class PeckDaemon:
             self.peers.pop(client_pubkey, None)
             # Spec 031: Also clean up pending requests for this pubkey
             self.pending_requests.pop(client_pubkey, None)
+            # Spec 038: Track session close for rate limiting
+            if self.rate_limiter:
+                self.rate_limiter.on_session_close(client_pubkey)
 
     def _get_or_create_session(self, client_pubkey: str, ip_preference: str = "both") -> PeerSession:
         if client_pubkey in self.peers:
             log.info(f"♻ replace existing session for {client_pubkey[:8]}")
             asyncio.create_task(self.peers[client_pubkey].close(reason="replaced"))
             del self.peers[client_pubkey]
+            # Spec 038: session replaced — don't double-count
+            if self.rate_limiter:
+                # The close() callback will decrement, but we immediately re-open.
+                # Net effect: count stays the same. We track via on_session_open below.
+                pass
 
         wg_ip, wg_ip6 = self.pick_wg_pair(ip_preference=ip_preference)
         session = PeerSession(
@@ -1139,6 +817,10 @@ class PeckDaemon:
         )
         self.peers[client_pubkey] = session
 
+        # Spec 038: Track session for rate limiting
+        if self.rate_limiter:
+            self.rate_limiter.on_session_open(client_pubkey)
+
         # Spec 031: In relay mode, check if this session completes a pending bridge
         if self.relay_mode:
             asyncio.create_task(self._check_bridge())
@@ -1152,7 +834,15 @@ class PeckDaemon:
         from the announce payload.
         Spec 026: consult self.policy_engine before doing any WebRTC work.
         Spec 033: Region blocking, Terms of Service, request-ip DM.
+        Spec 038: Rate limiting before any work.
         """
+        # Spec 038: Rate limit check (before any WebRTC work)
+        if self.rate_limiter is not None:
+            if not self.rate_limiter.check_announce(client_pubkey):
+                return  # Silent drop (FR-007)
+            if not self.rate_limiter.check_session(client_pubkey):
+                return  # Silent drop — global session cap
+
         # Spec 026: Policy decision (single filter point)
         if self.policy_engine is not None:
             # Spec 033: If client_ip is missing and policy has IP-based rules, request it
@@ -1626,38 +1316,7 @@ class PeckDaemon:
 
 # ─── CLI ───────────────────────────────────────────────────────────────────
 
-def load_nsec(path: str) -> str:
-    """Load a Nostr private key from a file.
-
-    Accepts both formats:
-    - Hex (64 chars, no prefix)
-    - Bech32 (nsec1...)  — decoded to hex internally
-    """
-    with open(path) as f:
-        content = f.read().strip()
-    if content.startswith("nsec1"):
-        return _nsec_to_hex(content)
-    return content
-
-
-def _nsec_to_hex(nsec: str) -> str:
-    """Decode a Nostr nsec (Bech32m) to a 32-byte hex string."""
-    if nsec.count("1") < 1:
-        raise ValueError(f"invalid nsec: no separator: {nsec[:20]}…")
-    hrp, _, data_part = nsec.rpartition("1")
-    if hrp != "nsec":
-        raise ValueError(f"invalid nsec hrp: {hrp!r} (expected 'nsec')")
-    # Reuse bech32 decoder from policy.py
-    from policy import _BECH32_CHARSET, _bech32_verify_checksum, _convertbits
-    data = [_BECH32_CHARSET.find(c) for c in data_part]
-    if any(d < 0 for d in data):
-        raise ValueError(f"invalid character in nsec: {nsec[:20]}…")
-    if not _bech32_verify_checksum(hrp, data):
-        raise ValueError(f"invalid nsec checksum: {nsec[:20]}…")
-    decoded = _convertbits(data[:-6], 5, 8, False)
-    if len(decoded) != 32:
-        raise ValueError(f"nsec decoded to {len(decoded)} bytes, expected 32")
-    return bytes(decoded).hex()
+# load_nsec() and _nsec_to_hex() extracted to crypto_helpers.py (imported above).
 
 
 def parse_args():
@@ -1709,6 +1368,25 @@ def parse_args():
                    help="streaming payment rate in sat/min (spec 031). 0 = free relay. "
                         "When > 0, the relay checks for an active Breez SDK Spark payment "
                         "stream before activating the bridge.")
+    # Spec 038: Rate Limiting
+    p.add_argument("--max-announces-per-npub", type=int, default=None,
+                   help="max announces per npub per window (spec 038, default 3). 0 = unlimited. "
+                        "Also settable via policy.yaml rate_limits.max_announces_per_npub.")
+    p.add_argument("--max-sessions-per-npub", type=int, default=None,
+                   help="max concurrent sessions per npub (spec 038, default 1). 0 = unlimited. "
+                        "Also settable via policy.yaml rate_limits.max_sessions_per_npub.")
+    p.add_argument("--max-sessions", type=int, default=None,
+                   help="global concurrent session limit (spec 038, default 10). 0 = unlimited. "
+                        "Also settable via policy.yaml rate_limits.max_sessions.")
+    p.add_argument("--max-announces-global", type=int, default=None,
+                   help="global announce rate limit per window (spec 038, default 20). 0 = unlimited. "
+                        "Also settable via policy.yaml rate_limits.max_announces_global.")
+    p.add_argument("--rate-limit-window", type=float, default=None,
+                   help="rate limit sliding window in seconds (spec 038, default 60). "
+                        "Also settable via policy.yaml rate_limits.window_seconds.")
+    p.add_argument("--rate-limit-cooldown", type=float, default=None,
+                   help="seconds to remember blocked npubs (spec 038, default 300). "
+                        "Also settable via policy.yaml rate_limits.cooldown_seconds.")
     return p.parse_args()
 
 
@@ -1865,6 +1543,52 @@ async def main():
     elif args.audit_log:
         log.warning("--audit-log given without --policy-file — audit log will not be written (no policy engine)")
 
+    # Spec 038: Rate Limiting — build config from CLI args + policy.yaml
+    from rate_limiter import RateLimiter, RateLimitConfig
+
+    rl_config = RateLimitConfig()
+
+    # Override from policy.yaml if rate_limits section exists
+    if args.policy_file:
+        try:
+            import yaml as _yaml
+            with open(args.policy_file) as f:
+                raw = _yaml.safe_load(f) or {}
+            rl = raw.get('rate_limits', {})
+            if isinstance(rl, dict):
+                if 'max_announces_per_npub' in rl:
+                    rl_config.max_announces_per_npub = int(rl['max_announces_per_npub'])
+                if 'max_sessions_per_npub' in rl:
+                    rl_config.max_sessions_per_npub = int(rl['max_sessions_per_npub'])
+                if 'max_sessions' in rl:
+                    rl_config.max_sessions = int(rl['max_sessions'])
+                if 'max_announces_global' in rl:
+                    rl_config.max_announces_global = int(rl['max_announces_global'])
+                if 'window_seconds' in rl:
+                    rl_config.window_seconds = float(rl['window_seconds'])
+                if 'cooldown_seconds' in rl:
+                    rl_config.cooldown_seconds = float(rl['cooldown_seconds'])
+                log.info(f"rate limits from policy.yaml: {rl_config}")
+        except Exception as e:
+            log.warning(f"could not read rate_limits from {args.policy_file}: {e}")
+
+    # CLI flags override policy.yaml
+    if args.max_announces_per_npub is not None:
+        rl_config.max_announces_per_npub = args.max_announces_per_npub
+    if args.max_sessions_per_npub is not None:
+        rl_config.max_sessions_per_npub = args.max_sessions_per_npub
+    if args.max_sessions is not None:
+        rl_config.max_sessions = args.max_sessions
+    if args.max_announces_global is not None:
+        rl_config.max_announces_global = args.max_announces_global
+    if args.rate_limit_window is not None:
+        rl_config.window_seconds = args.rate_limit_window
+    if args.rate_limit_cooldown is not None:
+        rl_config.cooldown_seconds = args.rate_limit_cooldown
+
+    rate_limiter = RateLimiter(rl_config)
+    log.info(f"rate limiter active: {rl_config}")
+
     daemon = PeckDaemon(
         privkey_hex=privkey,
         relays=relays,
@@ -1878,6 +1602,7 @@ async def main():
         relay_mode=args.relay_mode,
         relay_price=args.relay_price,
         wg_ip6s=wg_ip6s,
+        rate_limiter=rate_limiter,
     )
     # Spec 026: stash daemon instance so SIGHUP handler can reach policy engine
     _DAEMON_INSTANCE["daemon"] = daemon

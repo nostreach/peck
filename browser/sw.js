@@ -11,7 +11,7 @@
  * reloads don't hang on a dead tunnel reference.
  */
 
-const SW_VERSION = 'peck-sw-v6'
+const SW_VERSION = 'peck-sw-v8'
 const UI_PREFIXES = ['/sw.js', '/client.html', '/client.bundle.js', '/src/', '/wg-country-codes.js', '/geoip-data.js']
 
 let tunnelPort = null
@@ -143,9 +143,37 @@ async function routeThroughTunnel(request) {
       reject(new Error(msg.error))
     } else {
       const responseHeaders = new Headers()
+      const setCookies = []
+      const logActions = []
+
       for (const [k, v] of Object.entries(msg.headers || {})) {
-        responseHeaders.set(k, v)
+        // Set-Cookie needs special handling (multiple headers, sanitization)
+        if (k.toLowerCase() === 'set-cookie') {
+          setCookies.push(v)
+        } else {
+          responseHeaders.set(k, v)
+        }
       }
+
+      // Spec 041: Sanitize Set-Cookie headers from tunneled responses
+      for (const raw of setCookies) {
+        const result = sanitizeSetCookie(raw)
+        if (result.action === 'block') {
+          logActions.push(`🚫 Blocked peck_ cookie '${result.name}' from peer`)
+        } else if (result.action === 'strip') {
+          logActions.push(`🍪 Stripped Domain from cookie '${result.name}' (was: ${result.domain})`)
+        }
+        // action 'drop' = malformed/empty, silent per Spec 041
+        if (result.cookie) {
+          responseHeaders.append('set-cookie', result.cookie)
+        }
+      }
+
+      // Send sanitization logs to the page via the tunnel port
+      if (logActions.length) {
+        tunnelPort.postMessage({ type: 'SW_LOG', lines: logActions })
+      }
+
       resolve(new Response(
         msg.body ? new Uint8Array(msg.body) : new Uint8Array(0),
         { status: msg.status || 200, headers: responseHeaders }
@@ -157,4 +185,61 @@ async function routeThroughTunnel(request) {
   tunnelPort.postMessage({ type: 'TUNNEL_REQUEST', id, method, path, headers, body })
 
   return responsePromise
+}
+
+// ─── Spec 041: Cookie Sanitization ──────────────────────────────
+
+/**
+ * Parse and sanitize a single Set-Cookie header string.
+ *
+ * Rules:
+ * 1. Cookie name starts with 'peck_' → block entirely
+ * 2. Domain attribute present → strip it (scope to current subdomain)
+ * 3. Everything else → pass through unchanged
+ *
+ * @param {string} raw - The Set-Cookie header value
+ * @returns {{ action: 'pass'|'strip'|'block', name: string, domain?: string, cookie?: string }}
+ */
+function sanitizeSetCookie(raw) {
+  if (!raw || !raw.trim()) return { action: 'drop', name: '(empty)' }
+
+  // Split into cookie-pair and attributes
+  const parts = raw.split(';')
+  const pair = parts[0].trim()
+  const eqIdx = pair.indexOf('=')
+  if (eqIdx < 1) return { action: 'drop', name: '(malformed)' }
+
+  const name = pair.slice(0, eqIdx).trim()
+
+  // Rule 2: Block peck_ prefixed cookies from peer
+  if (name.toLowerCase().startsWith('peck_')) {
+    return { action: 'block', name }
+  }
+
+  // Rebuild attributes, stripping Domain
+  const keptAttrs = []
+  let strippedDomain = null
+
+  for (let i = 1; i < parts.length; i++) {
+    const attr = parts[i].trim()
+    if (!attr) continue
+
+    // Check if this is a Domain attribute (case-insensitive)
+    const attrLower = attr.toLowerCase()
+    if (attrLower.startsWith('domain=')) {
+      strippedDomain = attr.slice(7).trim()
+      // Don't add to keptAttrs — this is the strip
+      continue
+    }
+    keptAttrs.push(attr)
+  }
+
+  const cookie = pair + (keptAttrs.length ? ';' + keptAttrs.join('; ') : '')
+
+  return {
+    action: strippedDomain ? 'strip' : 'pass',
+    name,
+    domain: strippedDomain,
+    cookie
+  }
 }

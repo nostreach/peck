@@ -21,94 +21,13 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-
-# ─── Bech32m encoder (BIP-350) — used to derive npub from pubkey hex ──────
-
-_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-_BECH32M_CONST = 0x2bc830a3
+from bech32m import pubkey_hex_to_npub, npub_to_pubkey_hex
 
 
-def _bech32_polymod(values: list[int]) -> int:
-    """BIP-173 / BIP-350 polymod function (matches the reference impl)."""
-    GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
-    chk = 1
-    for v in values:
-        b = chk >> 25
-        chk = (chk & 0x1ffffff) << 5 ^ v
-        for i in range(5):
-            if (b >> i) & 1:  # FIXED: was b >>= 1; if b & 1
-                chk ^= GEN[i]
-    return chk
-
-
-def _bech32_hrp_expand(hrp: str) -> list[int]:
-    return [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp]
-
-
-def _bech32m_create_checksum(hrp: str, data: list[int]) -> list[int]:
-    values = _bech32_hrp_expand(hrp) + data
-    polymod = _bech32_polymod(values + [0, 0, 0, 0, 0, 0]) ^ _BECH32M_CONST
-    return [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
-
-
-def _bech32m_encode(hrp: str, data: list[int]) -> str:
-    combined = data + _bech32m_create_checksum(hrp, data)
-    return hrp + "1" + "".join([_BECH32_CHARSET[d] for d in combined])
-
-
-_BECH32_CHARSET_REV = {c: i for i, c in enumerate(_BECH32_CHARSET)}
-
-
-def _bech32m_decode(s: str) -> tuple[str, list[int] | None]:
-    """Decode a Bech32m string. Returns (hrp, data) or (hrp, None) on checksum failure."""
-    pos = s.rfind("1")
-    if pos < 1 or pos + 7 > len(s):
-        return s[:pos] if pos > 0 else s, None
-    hrp = s[:pos]
-    data_part = s[pos + 1:]
-    data = []
-    for c in data_part:
-        v = _BECH32_CHARSET_REV.get(c)
-        if v is None:
-            return hrp, None
-        data.append(v)
-    # Verify checksum
-    if _bech32_polymod(_bech32_hrp_expand(hrp) + data) != _BECH32M_CONST:
-        return hrp, None
-    return hrp, data[:-6]  # strip 6-byte checksum
-
-
-def _convertbits(data: bytes, frombits: int, tobits: int, pad: bool = True) -> list[int]:
-    acc = 0
-    bits = 0
-    ret: list[int] = []
-    maxv = (1 << tobits) - 1
-    for value in data:
-        acc = (acc << frombits) | value
-        bits += frombits
-        while bits >= tobits:
-            bits -= tobits
-            ret.append((acc >> bits) & maxv)
-    if pad and bits:
-        ret.append((acc << (tobits - bits)) & maxv)
-    return ret
-
-
-def pubkey_hex_to_npub(pubkey_hex: str) -> str:
-    """Encode a 32-byte x-only pubkey (hex) as a Nostr npub (Bech32m)."""
-    data = _convertbits(bytes.fromhex(pubkey_hex), 8, 5)
-    return _bech32m_encode("npub", data)
-
-
-def npub_to_pubkey_hex(npub: str) -> str:
-    """Decode a Nostr npub (Bech32m) back to a 32-byte x-only pubkey hex string."""
-    hrp, data = _bech32m_decode(npub)
-    if hrp != "npub" or data is None:
-        raise ValueError(f"invalid npub: {npub[:20]}")
-    decoded = _convertbits(data, 5, 8, False)
-    if decoded is None or len(decoded) != 32:
-        raise ValueError(f"npub does not decode to 32 bytes: {npub[:20]}")
-    return bytes(decoded).hex()
+# ─── Re-exports for backwards compat (client.py, daemon.py import from here) ──
+# All Bech32m functions now live in bech32m.py (CQ-3 dedup).
+# route_table.py re-exports the two public functions for callers that still
+# import from route_table.
 
 
 # ─── RouteTable ───────────────────────────────────────────────────────────

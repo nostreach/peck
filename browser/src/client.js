@@ -124,6 +124,94 @@ export function npubToHex(npub) {
   return bytes.map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
+/**
+ * Encode bytes as bech32m (NIP-19).
+ */
+function bech32Encode(hrp, data8) {
+  const data5 = convertBits(Array.from(data8), 8, 5, true)
+  const combined = bech32HRPExpand(hrp).concat(data5)
+  // Compute checksum
+  let chk = bech32Polymod(bech32HRPExpand(hrp).concat(data5, [0,0,0,0,0,0])) ^ BECH32M_CONST
+  const checksum = []
+  for (let i = 0; i < 6; i++) {
+    checksum.push((chk >> (5 * (5 - i))) & 31)
+  }
+  return hrp + '1' + data5.map(d => BECH32_CHARSET[d]).join('') + checksum.map(d => BECH32_CHARSET[d]).join('')
+}
+
+/**
+ * Encode a 32-byte hex private key as nsec1 (bech32m).
+ * @param {string} hex - 64-char hex private key
+ * @returns {string} nsec1...
+ */
+export function hexToNsec(hex) {
+  const bytes = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16)
+  }
+  return bech32Encode('nsec', bytes)
+}
+
+/**
+ * Decode an nsec1 string to a 64-char hex private key.
+ * @param {string} nsec
+ * @returns {string} 64-char hex
+ */
+export function nsecToHex(nsec) {
+  const { hrp, data } = bech32Decode(nsec)
+  if (hrp !== 'nsec') throw new Error(`Expected nsec, got '${hrp}'`)
+  const bytes = convertBits(data, 5, 8, false)
+  return bytes.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * Encode a 32-byte hex public key as npub1 (bech32m).
+ * @param {string} hex - 64-char hex public key
+ * @returns {string} npub1...
+ */
+export function hexToNpub(hex) {
+  const bytes = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16)
+  }
+  return bech32Encode('npub', bytes)
+}
+
+// ─── Spec 040: Nostr Identity ──────────────────────────────────
+
+/**
+ * Generate a new Nostr keypair.
+ * @returns {{ nsec: string, npub: string }} bech32-encoded keys
+ */
+export function generateKeypair() {
+  const privKey = crypto.getRandomValues(new Uint8Array(32))
+  const hex = Array.from(privKey).map(b => b.toString(16).padStart(2, '0')).join('')
+  const nsec = hexToNsec(hex)
+  const npub = deriveNpubFromBytes(privKey)
+  return { nsec, npub }
+}
+
+/**
+ * Derive npub from an nsec.
+ * @param {string} nsec
+ * @returns {string} npub1...
+ */
+export function deriveNpub(nsec) {
+  const privHex = nsecToHex(nsec)
+  const privBytes = new Uint8Array(privHex.length / 2)
+  for (let i = 0; i < privHex.length; i += 2) {
+    privBytes[i / 2] = parseInt(privHex.slice(i, i + 2), 16)
+  }
+  return deriveNpubFromBytes(privBytes)
+}
+
+function deriveNpubFromBytes(privBytes) {
+  const pubBytes = secp.getPublicKey(privBytes) // returns 33-byte compressed
+  const xOnly = pubBytes.slice(1) // strip parity prefix → 32 bytes
+  const pubHex = Array.from(xOnly).map(b => b.toString(16).padStart(2, '0')).join('')
+  return hexToNpub(pubHex)
+}
+
 // ─── HTTP request/response ──────────────────────────────────────
 
 /**
@@ -352,7 +440,7 @@ export function parseStats(report) {
   const natType = inferNatType(localType, remoteType)
 
   // Always prefer external IP (srflx). Fall back to host only if no srflx.
-  const displayLocalIp = localType === 'srflx' ? localIp : localIp
+  const displayLocalIp = localIp
   const displayRemoteIp = remoteIp
 
   const lossPct = packetsSent != null && packetsLost != null && packetsSent > 0
@@ -417,13 +505,16 @@ function formatBytes(bytes) {
 
 // ─── connect ────────────────────────────────────────────────────
 
-export async function connect({ npub, relays, timeout = 30000, onDebug, onDisconnect, onDeny, onTermsChallenge, onOfferSdp, onAnswerSdp, onOwnIps, ipPreference, powTarget, _transport }) {
+export async function connect({ npub, relays, timeout = 30000, onDebug, onDisconnect, onDeny, onTermsChallenge, onOfferSdp, onAnswerSdp, onOwnIps, ipPreference, powTarget, autoAcceptTerms, _transport }) {
   // Decode daemon's npub → hex pubkey (used as NIP-44 recipient)
   const daemonPubkeyHex = npubToHex(npub)
 
   // Generate ephemeral key pair for NIP-44 DMs
   const privkeyBytes = randomBytes(32)
   const privkeyHex = secp.etc.bytesToHex(privkeyBytes)
+  // Derive ephemeral bech32 keys (safe to display; user may save the nsec)
+  const ephemeralNpub = deriveNpubFromBytes(privkeyBytes)
+  const ephemeralNsec = hexToNsec(privkeyHex)
 
   // Default transport is NativeTransport (NIP-44 + native RTCPeerConnection).
   // Callers may inject a custom transport via _transport for testing or to
@@ -437,6 +528,7 @@ export async function connect({ npub, relays, timeout = 30000, onDebug, onDiscon
     onAnswerSdp,
     onOwnIps,
     ipPreference,
+    autoAcceptTerms,
   })
 
   const manager = new StreamManager()
@@ -625,5 +717,6 @@ export async function connect({ npub, relays, timeout = 30000, onDebug, onDiscon
   }
 
   return { request, close, getDiagnostics, _transport: transport,
+           ephemeralNpub, ephemeralNsec,
            get isClosed() { return closed } }
 }

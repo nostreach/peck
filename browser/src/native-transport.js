@@ -48,7 +48,7 @@ export class NativeTransport {
    * @param {string} [options.ipPreference] - Spec 034: "ipv4" | "ipv6" | "both" (default: "both")
    */
   constructor(options = {}) {
-    const { privkeyHex, pubkeyHex, relays, onDebug, onOfferSdp, onAnswerSdp, onOwnIps, ipPreference } = options
+    const { privkeyHex, pubkeyHex, relays, onDebug, onOfferSdp, onAnswerSdp, onOwnIps, ipPreference, autoAcceptTerms } = options
     this.privkeyHex = privkeyHex
     this.pubkeyHex = pubkeyHex
     this.relays = relays
@@ -57,6 +57,7 @@ export class NativeTransport {
     this.onAnswerSdp = onAnswerSdp
     this.onOwnIps = onOwnIps
     this.ipPreference = ipPreference || 'both'
+    this.autoAcceptTerms = autoAcceptTerms || false
 
     this.pubkey = (() => {
       // secp.getPublicKey expects Uint8Array, not hex string.
@@ -465,8 +466,8 @@ export class NativeTransport {
       const version = msg.version || ''
       this._debug('terms_challenge', { version, textLen: text.length })
 
-      // Check auto_accept_terms in localStorage
-      const autoAccept = localStorage.getItem('peck_auto_accept_terms') === 'true'
+      // Check auto_accept_terms (resolved by caller, not read from localStorage directly)
+      const autoAccept = this.autoAcceptTerms
       if (autoAccept) {
         this._debug('terms_auto_accepted', { version })
         this.acceptTerms(version)

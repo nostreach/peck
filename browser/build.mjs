@@ -57,14 +57,14 @@ html = html.replace(/<script type="importmap">[\s\S]*?<\/script>\s*/, '')
 // prefix like /_p8082/. A relative './client.bundle.js' would resolve
 // to /_p8082/client.bundle.js and 404.
 html = html.replace(
-  /import \{ connect, formatDiagnostics \} from '\.\.\/src\/client\.js\?v=[\w\d]+'/,
-  "import { connect, formatDiagnostics } from '/client.bundle.js'"
+  /import \{ connect, formatDiagnostics, generateKeypair, deriveNpub \} from '\.\.\/src\/client\.js\?v=[\w\d]+'/,
+  "import { connect, formatDiagnostics, generateKeypair, deriveNpub } from '/client.bundle.js'"
 )
 
 // Fallback: also handle import without version query
 html = html.replace(
-  /import \{ connect, formatDiagnostics \} from '\.\.\/src\/client\.js'/,
-  "import { connect, formatDiagnostics } from '/client.bundle.js'"
+  /import \{ connect, formatDiagnostics, generateKeypair, deriveNpub \} from '\.\.\/src\/client\.js'/,
+  "import { connect, formatDiagnostics, generateKeypair, deriveNpub } from '/client.bundle.js'"
 )
 
 // Remove the NativeTransport import lines (comment + import), but NOT the

@@ -19,21 +19,20 @@ import json
 import logging
 import os
 import secrets
-import struct
 import sys
 import time
 
 import aiohttp
 import aioice.ice
-import coincurve
 from aiortc import RTCPeerConnection, RTCSessionDescription
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from daemon import (
-    get_pubkey, make_event, encode_frame, decode_frame,
+from protocol import (
+    encode_frame, decode_frame,
     MSG_OPEN, MSG_DATA, MSG_CLOSE, MSG_RST,
     parse_http_request, compose_http_response,
 )
+from crypto_helpers import get_pubkey, make_event
 from nip44 import encrypt as nip44_encrypt, decrypt as nip44_decrypt
 
 logging.basicConfig(
