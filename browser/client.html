@@ -116,7 +116,7 @@
     #npub-display {
       font-family: monospace; color: #8b949e;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      min-width: 0; flex-shrink: 1; flex-grow: 1;
+      min-width: 0; flex-shrink: 1;
     }
     #header-diag {
       font-family: monospace; font-size: 11px; color: #3fb950;
@@ -2800,6 +2800,7 @@
       // Without this, peck connects with default settings even though
       // the user's actual settings are still locked in the vault.
       if (_vaultActive) {
+        setStatus('connecting', 'awaiting vault…')
         await _vaultGate
       }
 
