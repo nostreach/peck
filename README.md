@@ -297,12 +297,7 @@ peck/
 │   ├── peck-config.example.json
 │   ├── build.mjs              # esbuild bundler
 │   ├── package.json
-│   ├── vendor/                # @noble/* crypto bundles (generated)
-│   │   ├── secp256k1.mjs
-│   │   ├── sha2.mjs
-│   │   ├── hmac.mjs
-│   │   ├── chacha.mjs
-│   │   └── utils.mjs
+│   ├── vendor/                # @noble/* crypto bundles (generated, not committed)
 │   ├── src/                   # ES module sources
 │   │   ├── client.js          # Connect, tunnel, navigate
 │   │   ├── native-transport.js# NIP-44 DM signaling + WebRTC

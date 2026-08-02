@@ -17,6 +17,7 @@ policy.yaml
 # Browser client
 node_modules/
 dist/
+browser/vendor/
 
 # Editor
 *.swp
