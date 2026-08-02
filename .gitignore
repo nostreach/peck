@@ -24,6 +24,20 @@ dist/
 .idea/
 .vscode/
 
+# Test fixtures (may contain deployment-specific data)
+policy.yaml.test
+ports.yaml.test
+
+# Sync planning artifacts
+.SYNC-PLAN.md
+
+# Spec Kit config (internal)
+.specify/
+.specify/
+
+# Hermes session data
+.hermes/
+
 # OS
 .DS_Store
 *.pid
