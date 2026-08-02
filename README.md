@@ -238,7 +238,25 @@ The daemon supports multiple backend ports via path-prefix routing (`/_p<port>/p
 
 Optional policy engine for IP allow/deny, GeoIP-based region blocking, terms-of-service challenges, and rate limiting. See `policy.yaml.example`.
 
-### Client config (`peck-config.json`)
+### Browser-side encryption (Vault)
+
+The browser client stores all settings — including the Nostr private key
+(nsec) — in an **AES-256-GCM encrypted vault cookie**. The vault key is
+derived from a user-chosen password via **PBKDF2** (600,000 iterations).
+
+- **No plaintext secrets**: The nsec never appears in a plaintext cookie or
+  localStorage. When the vault is locked, settings are inaccessible.
+- **Three vault states**: **ON** (unlocked, green), **SKIPPED** (amber,
+  using ephemeral session keys without touching the vault), **OFF** (no
+  vault, ephemeral keys only).
+- **Ephemeral session identity**: When no vault is active, the browser
+  generates an ephemeral Nostr keypair per session. The ephemeral nsec is
+  shown read-only and can be saved by the user.
+- **nsec never in DOM**: The private key is never embedded in DOM
+  attributes. Copy/Reveal operations use JS closures, preventing
+  exfiltration by tunneled page scripts.
+
+### Client settings (`peck-config.json`)
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -256,12 +274,16 @@ peck/
 │   ├── daemon.py              # Main daemon (aiortc + aiohttp + coincurve)
 │   ├── client.py              # CLI test client
 │   ├── nip44.py               # NIP-44 v2 encryption (Python)
+│   ├── bech32m.py             # Bech32m encoding/decoding
+│   ├── crypto_helpers.py      # Shared crypto utilities
+│   ├── protocol.py            # Binary stream multiplexer
 │   ├── policy.py              # Access control policy engine
-│   ├── policy.yaml.example    # Example policy config
+│   ├── rate_limiter.py        # Per-client rate limiting
 │   ├── route_table.py         # Multi-level subdomain routing
 │   ├── ports.py               # Multi-port configuration
-│   ├── policy_test.py         # Policy unit tests
-│   ├── ports_test.py          # Ports unit tests
+│   ├── wg_manager.py          # WireGuard tunnel management
+│   ├── policy.yaml.example    # Example policy config
+│   ├── *_test.py              # Unit tests
 │   ├── deploy/                # systemd service files
 │   │   ├── peck-daemon.service
 │   │   └── peck-daemon-netns.service   # Network namespace variant
@@ -270,12 +292,17 @@ peck/
 │       └── peck-vpn-netns.sh  # Network namespace setup
 │
 ├── browser/                   # Browser client (client-side)
-│   ├── client.html            # Full browser client (~97 KB)
+│   ├── client.html            # Full browser client (~121 KB)
 │   ├── sw.js                  # Service Worker (sub-asset tunneling)
 │   ├── peck-config.example.json
 │   ├── build.mjs              # esbuild bundler
 │   ├── package.json
 │   ├── vendor/                # @noble/* crypto bundles (generated)
+│   │   ├── secp256k1.mjs
+│   │   ├── sha2.mjs
+│   │   ├── hmac.mjs
+│   │   ├── chacha.mjs
+│   │   └── utils.mjs
 │   ├── src/                   # ES module sources
 │   │   ├── client.js          # Connect, tunnel, navigate
 │   │   ├── native-transport.js# NIP-44 DM signaling + WebRTC
@@ -283,6 +310,9 @@ peck/
 │   │   ├── protocol.js        # Binary stream multiplexing
 │   │   ├── wg-country-codes.js# IP → country flag (geoip)
 │   │   └── geoip-data.js      # GeoIP database (bundled)
+│   ├── tests/                 # Browser unit tests
+│   │   ├── client.test.js
+│   │   └── protocol.test.js
 │   └── test-site/             # Example site for testing
 │
 └── docs/                      # Documentation
@@ -339,6 +369,8 @@ No runtime CDN dependencies. All cryptographic code is self-hosted.
 
 **Mitigations in place**:
 - **Content-Security-Policy**: Restricts external resource loading and connections to arbitrary endpoints.
+- **Encrypted vault**: All sensitive settings (nsec, relay preferences) are stored in an AES-256-GCM encrypted cookie. Tunneled scripts cannot read the vault without the user's password.
+- **nsec isolation**: The private key is never embedded in DOM attributes. Copy/Reveal operations read from JS closures, preventing exfiltration via `querySelector`.
 - Peck settings are stored in cookies (cross-subdomain) and localStorage. The CSP prevents tunneled scripts from exfiltrating data to external endpoints.
 
 **Future hardening options** (not yet implemented):
