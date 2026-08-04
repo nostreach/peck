@@ -8,7 +8,7 @@
 
 > **Status**: Beta. E2E-validated in production at [dns2nostr.com](https://dns2nostr.com).
 >
-> **Try it out**: Visit [peck.dns2nostr.com](https://peck.dns2nostr.com) to see a live peck tunnel in action.
+> **Try it out**: Visit [peck.dns2nostr.com](https://peck.dns2nostr.com) or [npub109qld239ccprdsu2r5vltx7xdz0ypjk0dts42d37lqeceuuz64ss5aq9dk.dns2nostr.com](https://npub109qld239ccprdsu2r5vltx7xdz0ypjk0dts42d37lqeceuuz64ss5aq9dk.dns2nostr.com) to see a live peck tunnel in action.
 
 ---
 
@@ -25,15 +25,15 @@ Exposing a home server, self-hosted app, or anything behind NAT usually means:
 ## How it works
 
 ```
- ┌──────────┐                    Nostr Relays                   ┌──────────┐
+ ┌──────────┐                    Nostr Relays                  ┌───────────┐
  │ Browser  │ ◄──────── NIP-44 encrypted DMs ────────────────► │  Daemon   │
  │          │   (announce, offer, answer, ICE candidates)      │ (Python)  │
- │          │                                                   │           │
+ │          │                                                  │           │
  │  WebRTC  │ ◄─────────── direct P2P DataChannel ───────────► │  aiortc   │
- │  client  │             (NAT hole punched)                    │           │
- │          │                                                   │           │
+ │  client  │             (NAT hole punched)                   │           │
+ │          │                                                  │           │
  │  fetch() │ ── HTTP over DataChannel ──────────────────────► │ localhost │
- └──────────┘                                                   └──────────┘
+ └──────────┘                                                  └───────────┘
 ```
 
 1. Daemon starts, generates a Nostr keypair, connects to relays
