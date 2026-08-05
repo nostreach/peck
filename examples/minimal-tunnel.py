@@ -6,10 +6,12 @@ Demonstrates the full peck protocol in one self-contained script.
 No dependency on the peck daemon — run two instances that talk to each other:
 
     Terminal 1 (daemon):
-        python minimal-tunnel.py daemon
+        python minimal-tunnel.py
 
     Terminal 2 (client):
-        python minimal-tunnel.py client <daemon_npub_hex>
+        python minimal-tunnel.py <daemon_npub_hex>
+
+No args = daemon, one npub arg = client.
 
 The daemon prints its npub on startup. The client connects, and they
 exchange "ping" / "pong" over a direct WebRTC DataChannel — signaled
@@ -393,34 +395,31 @@ async def _wait_for_ice_gathering(pc: RTCPeerConnection, timeout: float = 10.0):
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("daemon", "client"):
-        print("peck minimal tunnel — reference P2P implementation")
-        print()
-        print("Usage:")
-        print("  Terminal 1:  python minimal-tunnel.py daemon")
-        print("  Terminal 2:  python minimal-tunnel.py client <daemon_npub_hex>")
-        print()
-        print("The daemon prints its npub on startup. Copy it for the client.")
-        print()
-        print("Requirements:  pip install aiohttp aiortc coincurve")
-        print("               + daemon/nip44.py from the peck repo")
-        sys.exit(1)
-
-    mode = sys.argv[1]
-    if mode == "daemon":
+    args = sys.argv[1:]
+    if not args:
+        # No pubkey → daemon mode
         try:
             asyncio.run(run_daemon())
         except KeyboardInterrupt:
             print("\n[interrupted]")
-    elif mode == "client":
-        if len(sys.argv) < 3:
-            print("Usage: python minimal-tunnel.py client <daemon_npub_hex>")
-            sys.exit(1)
-        daemon_pubkey = sys.argv[2]
+    elif len(args) == 1 and args[0] not in ("-h", "--help"):
+        # Pubkey provided → client mode
         try:
-            asyncio.run(run_client(daemon_pubkey))
+            asyncio.run(run_client(args[0]))
         except KeyboardInterrupt:
             print("\n[interrupted]")
+    else:
+        print("peck minimal tunnel — reference P2P implementation")
+        print()
+        print("Usage:")
+        print("  Terminal 1:  python minimal-tunnel.py                  # daemon")
+        print("  Terminal 2:  python minimal-tunnel.py <daemon_npub>     # client")
+        print()
+        print("No args = daemon. One npub arg = client.")
+        print()
+        print("Requirements:  pip install aiohttp aiortc coincurve")
+        print("               + daemon/nip44.py from the peck repo")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
