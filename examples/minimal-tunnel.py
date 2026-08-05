@@ -132,8 +132,14 @@ class RelayManager:
             if not ws.closed:
                 await ws.send_str(payload)
 
-    async def recv_dm(self, sender_pubkey: str, timeout: float = 20.0) -> dict:
-        """Wait for a NIP-44 DM from sender_pubkey. Returns decrypted JSON."""
+    async def recv_dm(self, sender_pubkey: str, timeout: float = 20.0,
+                      expected_types: list[str] | None = None) -> dict:
+        """Wait for a NIP-44 DM from sender_pubkey. Returns decrypted JSON.
+
+        If expected_types is given, skip messages whose 'type' field doesn't
+        match — this handles duplicate announce DMs arriving via relay
+        redundancy.
+        """
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
@@ -157,7 +163,10 @@ class RelayManager:
                     continue
                 self._seen[eid] = True
                 plaintext = _nip44_decrypt(event["content"], self.privkey, sender_pubkey)
-                return json.loads(plaintext)
+                parsed = json.loads(plaintext)
+                if expected_types and parsed.get("type") not in expected_types:
+                    continue
+                return parsed
             await asyncio.sleep(0.05)
 
     async def close(self):
@@ -248,10 +257,7 @@ async def run_daemon():
     print("  → offer sent")
 
     # Wait for answer
-    answer_msg = await relay.recv_dm(client_pubkey, timeout=20.0)
-    if answer_msg.get("type") != "answer":
-        print(f"  ✗ expected answer, got: {answer_msg}")
-        return
+    answer_msg = await relay.recv_dm(client_pubkey, timeout=20.0, expected_types=["answer"])
     await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_msg["sdp"], type="answer"))
     print("  ← answer applied")
 
@@ -259,12 +265,11 @@ async def run_daemon():
     async def listen_candidates():
         while True:
             try:
-                msg = await relay.recv_dm(client_pubkey, timeout=30.0)
-                if msg.get("type") == "candidate":
-                    from aiortc.sdp import candidate_from_sdp
-                    cand = candidate_from_sdp(msg["sdp"])
-                    await pc.addIceCandidate(cand)
-                    print("  ← ICE candidate from client")
+                msg = await relay.recv_dm(client_pubkey, timeout=30.0, expected_types=["candidate"])
+                from aiortc.sdp import candidate_from_sdp
+                cand = candidate_from_sdp(msg["sdp"])
+                await pc.addIceCandidate(cand)
+                print("  ← ICE candidate from client")
             except (TimeoutError, asyncio.CancelledError):
                 break
 
@@ -301,17 +306,19 @@ async def run_client(daemon_pubkey: str):
 
     # Set up WebRTC (client is the answerer — receives DataChannel)
     pc = RTCPeerConnection(configuration=rtc_config())
-    channel_ready = asyncio.Event()
+    received_channel: list = []  # will hold the DataChannel once it arrives
+    got_pong = asyncio.Event()
 
     @pc.on("datachannel")
     def on_datachannel(channel):
-        print(f"  [webrtc] DataChannel: {channel.label}")
+        print(f"  [webrtc] DataChannel opened: {channel.label}")
+        received_channel.append(channel)
 
         @channel.on("message")
         def on_message(message):
             text = message.decode() if isinstance(message, bytes) else message
             print(f"  ← received: {text!r}")
-            channel_ready.set()
+            got_pong.set()
 
     @pc.on("icecandidate")
     def on_icecandidate(event):
@@ -331,10 +338,7 @@ async def run_client(daemon_pubkey: str):
 
     # Wait for offer
     print("  Waiting for offer…")
-    offer_msg = await relay.recv_dm(daemon_pubkey, timeout=20.0)
-    if offer_msg.get("type") != "offer":
-        print(f"  ✗ expected offer, got: {offer_msg}")
-        return
+    offer_msg = await relay.recv_dm(daemon_pubkey, timeout=20.0, expected_types=["offer"])
 
     # Apply offer, create answer
     await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_msg["sdp"], type="offer"))
@@ -347,33 +351,37 @@ async def run_client(daemon_pubkey: str):
     await relay.send_dm(daemon_pubkey, {"type": "answer", "sdp": pc.localDescription.sdp})
     print("  → answer sent")
 
-    # Wait for DataChannel + send ping
+    # Wait for WebRTC to connect, then send ping
     print("\n  Waiting for DataChannel…")
-    try:
-        await asyncio.wait_for(channel_ready.wait(), timeout=20.0)
-    except asyncio.TimeoutError:
-        print("  ✗ DataChannel never opened")
-        await pc.close()
-        await relay.close()
-        return
+    deadline = asyncio.get_event_loop().time() + 30.0
+    while not received_channel:
+        if asyncio.get_event_loop().time() > deadline:
+            print("  ✗ DataChannel never opened")
+            await pc.close()
+            await relay.close()
+            return
+        await asyncio.sleep(0.5)
 
-    print("\n  ═══ Tunnel established ═══")
-
-    # Get the DataChannel to send ping
-    channel = None
-    if pc.sctp and pc.sctp.transport:
-        for dc in pc.sctp.transport.dataChannels:
-            channel = dc
+    channel = received_channel[0]
+    # Wait until channel is open
+    while channel.readyState != "open":
+        if asyncio.get_event_loop().time() > deadline:
+            print(f"  ✗ DataChannel state: {channel.readyState}")
             break
+        await asyncio.sleep(0.5)
 
-    if channel and channel.readyState == "open":
+    if channel.readyState == "open":
+        print("\n  ═══ Tunnel established ═══")
         channel.send(b"ping")
         print('  → sent: "ping"')
         # Wait for pong
-        await asyncio.sleep(2)
-        print('\n  ✓ Got "pong" — tunnel works!')
+        try:
+            await asyncio.wait_for(got_pong.wait(), timeout=10.0)
+            print('\n  ✓ Got "pong" — tunnel works!')
+        except asyncio.TimeoutError:
+            print("\n  ✗ No pong received (timeout)")
     else:
-        print("  ✗ DataChannel not open")
+        print(f"  ✗ DataChannel not open (state={channel.readyState})")
 
     await asyncio.sleep(1)
     await pc.close()
