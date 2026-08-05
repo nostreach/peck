@@ -311,7 +311,7 @@ peck/
 │   └── test-site/             # Example site for testing
 │
 ├── examples/                  # Reference implementations
-│   └── minimal-tunnel.py      # Minimal P2P client (~140 lines)
+│   └── minimal-tunnel.py      # Two-process P2P reference (daemon + client)
 │
 └── docs/                      # Documentation
     ├── PROTOCOL.md            # Wire-level protocol specification
@@ -389,7 +389,7 @@ If you need genuine anonymity, rely on established methods (Tor, properly config
 ## Further Documentation
 
 - [Protocol Specification](docs/PROTOCOL.md) — Wire-level spec: message types, ICE negotiation, binary stream protocol, connection sequence
-- [Minimal Tunnel Example](examples/minimal-tunnel.py) — ~140-line Python script demonstrating the full P2P connection flow
+- [Minimal Tunnel Example](examples/minimal-tunnel.py) — Two-process P2P reference: `python minimal-tunnel.py daemon` + `python minimal-tunnel.py client <npub>`
 - [WireGuard Multi-Tunnel Setup](docs/WIREGUARD.md) — IP diversity, network namespaces, multi-WG configuration
 - [Access Control & Policy](docs/ACCESS_CONTROL.md) — IP filtering, GeoIP blocking, terms-of-service, audit logging
 - [Third-Party Licenses](THIRD_PARTY.md) — Dependencies and their licenses

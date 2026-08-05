@@ -1,65 +1,62 @@
 #!/usr/bin/env python3
 """
-peck minimal tunnel — reference P2P client.
+peck minimal tunnel — two-process P2P reference.
 
-Demonstrates the full peck connection flow in ~140 lines:
-  1. Generate ephemeral Nostr keypair
-  2. Connect to Nostr relays via WebSocket
-  3. Send NIP-44 encrypted announce DM to the daemon
-  4. Receive WebRTC offer (SDP) from daemon
-  5. Send WebRTC answer back
-  6. Exchange ICE candidates (trickle)
-  7. Open DataChannel, send HTTP request, receive response
+Demonstrates the full peck protocol in one self-contained script.
+No dependency on the peck daemon — run two instances that talk to each other:
 
-This is NOT production code — it's a reference for protocol implementers.
-For the full client, see browser/src/native-transport.js.
+    Terminal 1 (daemon):
+        python minimal-tunnel.py daemon
+
+    Terminal 2 (client):
+        python minimal-tunnel.py client <daemon_npub_hex>
+
+The daemon prints its npub on startup. The client connects, and they
+exchange "ping" / "pong" over a direct WebRTC DataChannel — signaled
+entirely through NIP-44 encrypted Nostr DMs.
+
+Protocol flow (see docs/PROTOCOL.md for the full spec):
+    1. Both sides connect to Nostr relays, subscribe for kind=4 DMs
+    2. Client sends announce DM (NIP-44 encrypted)
+    3. Daemon creates WebRTC offer, sends it
+    4. Client sends answer
+    5. Trickle ICE candidates exchanged via DMs
+    6. DataChannel opens — client sends "ping", daemon responds "pong"
 
 Requirements:
     pip install aiohttp aiortc coincurve
-
-Usage:
-    # The daemon npub (64 hex chars, NOT npub1...)
-    python minimal-tunnel.py <daemon_npub_hex>
-
-    # Or with a specific relay
-    python minimal-tunnel.py <daemon_npub_hex> wss://relay.primal.net
-
-Example:
-    python minimal-tunnel.py 79bff2e0f78c9e3e6f4d2a1b3c5e7f9a...
 """
 
 import asyncio
-import json
 import hashlib
+import json
 import secrets
+import struct
 import sys
+import time
 
 import aiohttp
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription
 import coincurve
 
-
-# ─── Nostr + crypto helpers (inline — see daemon/crypto_helpers.py for full) ───
+# ─── Config ──────────────────────────────────────────────────────────────────
 
 RELAYS = [
     "wss://relay.primal.net",
     "wss://no.str.cr",
 ]
 
-STUN_SERVERS = [
-    "stun:stun.l.google.com:19302",
-]
+STUN_SERVERS = ["stun:stun.l.google.com:19302"]
 
+
+# ─── Nostr + crypto helpers ──────────────────────────────────────────────────
 
 def get_pubkey(privkey_hex: str) -> str:
-    """Derive x-only pubkey (32 bytes, 64 hex) from a private key."""
     sk = coincurve.PrivateKey(bytes.fromhex(privkey_hex))
     return sk.public_key.format(compressed=True)[1:].hex()
 
 
 def make_event(privkey_hex: str, recipient_pubkey: str, content: str) -> dict:
-    """Create and sign a Nostr kind=4 (DM) event."""
-    import time
     pub = get_pubkey(privkey_hex)
     created_at = int(time.time())
     tags = [["p", recipient_pubkey]]
@@ -68,214 +65,363 @@ def make_event(privkey_hex: str, recipient_pubkey: str, content: str) -> dict:
     sk = coincurve.PrivateKey(bytes.fromhex(privkey_hex))
     sig = sk.sign_schnorr(bytes.fromhex(event_id))
     return {
-        "kind": 4,
-        "content": content,
-        "tags": tags,
-        "created_at": created_at,
-        "pubkey": pub,
-        "id": event_id,
-        "sig": sig.hex(),
+        "kind": 4, "content": content, "tags": tags,
+        "created_at": created_at, "pubkey": pub,
+        "id": event_id, "sig": sig.hex(),
     }
 
 
-# ─── NIP-44 import (from daemon/nip44.py) ────────────────────────────────────
-# In production, use the full implementation. Here we import from daemon/.
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "daemon"))
-from nip44 import encrypt as nip44_encrypt, decrypt as nip44_decrypt
+# ─── NIP-44 (inline minimal impl; production code uses daemon/nip44.py) ──────
+
+def _nip44_encrypt(plaintext: str, privkey_hex: str, recipient_pubkey_hex: str) -> str:
+    """NIP-44 v2 encrypt. Delegates to the daemon's nip44.py if available,
+    otherwise raises with install instructions."""
+    try:
+        sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "daemon"))
+        from nip44 import encrypt
+        return encrypt(plaintext, privkey_hex, recipient_pubkey_hex)
+    except ImportError:
+        raise ImportError(
+            "nip44.py not found. Run from the peck repo root, or copy "
+            "daemon/nip44.py next to this script."
+        )
 
 
-# ─── Main connection flow ────────────────────────────────────────────────────
+def _nip44_decrypt(payload: str, privkey_hex: str, sender_pubkey_hex: str) -> str:
+    try:
+        sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "daemon"))
+        from nip44 import decrypt
+        return decrypt(payload, privkey_hex, sender_pubkey_hex)
+    except ImportError:
+        raise ImportError("nip44.py not found. See _nip44_encrypt for instructions.")
 
-async def connect(daemon_pubkey: str, relay_urls: list[str] | None = None):
-    """Establish a peck tunnel to the daemon and send a test HTTP request."""
-    relays = relay_urls or RELAYS
 
-    # 1. Generate ephemeral Nostr keypair
-    privkey = secrets.token_hex(32)
-    my_pubkey = get_pubkey(privkey)
-    peer_id = secrets.token_hex(8)
-    print(f"[client] ephemeral pubkey: {my_pubkey[:16]}…")
-    print(f"[client] peer_id: {peer_id}")
-    print(f"[client] daemon: {daemon_pubkey[:16]}…")
+# ─── Shared relay manager ────────────────────────────────────────────────────
 
-    # 2. Connect to relays
-    session = aiohttp.ClientSession()
-    websockets = []
-    for url in relays:
-        try:
-            ws = await session.ws_connect(url)
-            websockets.append(ws)
-            sub_filter = {"kinds": [4], "#p": [my_pubkey]}
-            await ws.send_str(json.dumps(["REQ", "peck-" + peer_id, sub_filter]))
-            print(f"[relay] ✓ connected to {url}")
-        except Exception as e:
-            print(f"[relay] ✗ {url}: {e}")
+class RelayManager:
+    """Manages WebSocket connections to multiple Nostr relays."""
 
-    if not websockets:
-        print("[error] No relays connected")
-        return
+    def __init__(self, privkey: str):
+        self.privkey = privkey
+        self.pubkey = get_pubkey(privkey)
+        self.session: aiohttp.ClientSession | None = None
+        self.websockets: list[aiohttp.ClientWebSocketResponse] = []
+        self._seen: dict[str, bool] = {}
 
-    # Helper: send a NIP-44 encrypted DM to the daemon
-    async def send_dm(msg: dict):
+    async def connect(self):
+        self.session = aiohttp.ClientSession()
+        sub_id = "peck-" + secrets.token_hex(4)
+        for url in RELAYS:
+            try:
+                ws = await self.session.ws_connect(url)
+                await ws.send_str(json.dumps(["REQ", sub_id, {"kinds": [4], "#p": [self.pubkey]}]))
+                self.websockets.append(ws)
+                print(f"  [relay] ✓ {url}")
+            except Exception as e:
+                print(f"  [relay] ✗ {url}: {e}")
+
+    async def send_dm(self, recipient_pubkey: str, msg: dict):
+        """Encrypt msg as NIP-44 DM, publish as kind=4 event to all relays."""
         plaintext = json.dumps(msg)
-        encrypted = nip44_encrypt(plaintext, privkey, daemon_pubkey)
-        event = make_event(privkey, daemon_pubkey, encrypted)
+        encrypted = _nip44_encrypt(plaintext, self.privkey, recipient_pubkey)
+        event = make_event(self.privkey, recipient_pubkey, encrypted)
         payload = json.dumps(["EVENT", event])
-        for ws in websockets:
+        for ws in self.websockets:
             if not ws.closed:
                 await ws.send_str(payload)
 
-    # Helper: wait for a specific message type from the daemon
-    async def wait_for_msg(types: list[str], timeout: float = 15.0) -> dict:
+    async def recv_dm(self, sender_pubkey: str, timeout: float = 20.0) -> dict:
+        """Wait for a NIP-44 DM from sender_pubkey. Returns decrypted JSON."""
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
-                raise TimeoutError(f"Timed out waiting for {types}")
-            for ws in websockets:
+                raise TimeoutError("Timed out waiting for DM")
+            for ws in self.websockets:
                 try:
-                    msg = await asyncio.wait_for(ws.receive(), timeout=remaining)
+                    raw = await asyncio.wait_for(ws.receive(), timeout=min(remaining, 1.0))
                 except asyncio.TimeoutError:
                     continue
-                if msg.type != aiohttp.WSMsgType.TEXT:
+                if raw.type != aiohttp.WSMsgType.TEXT:
                     continue
-                data = json.loads(msg.data)
+                data = json.loads(raw.data)
                 if data[0] != "EVENT" or len(data) < 3:
                     continue
                 event = data[2]
-                if event.get("kind") != 4:
+                if event.get("kind") != 4 or event.get("pubkey") != sender_pubkey:
                     continue
-                if event.get("pubkey") != daemon_pubkey:
+                eid = event.get("id", "")
+                if eid in self._seen:
                     continue
-                try:
-                    plaintext = nip44_decrypt(event["content"], privkey, daemon_pubkey)
-                    parsed = json.loads(plaintext)
-                except Exception:
-                    continue
-                if parsed.get("type") in types:
-                    return parsed
-            await asyncio.sleep(0.1)
+                self._seen[eid] = True
+                plaintext = _nip44_decrypt(event["content"], self.privkey, sender_pubkey)
+                return json.loads(plaintext)
+            await asyncio.sleep(0.05)
 
-    # 3. Set up WebRTC peer connection
-    pc = RTCPeerConnection({"iceServers": [{"urls": s} for s in STUN_SERVERS]})
+    async def close(self):
+        for ws in self.websockets:
+            await ws.close()
+        if self.session:
+            await self.session.close()
+
+
+# ─── WebRTC config helper ────────────────────────────────────────────────────
+
+def rtc_config() -> RTCConfiguration:
+    return RTCConfiguration(iceServers=[RTCIceServer(urls=STUN_SERVERS)])
+
+
+# ─── Daemon mode ─────────────────────────────────────────────────────────────
+
+async def run_daemon():
+    """Listen for announce DMs, create WebRTC offer, respond to pings."""
+    privkey = secrets.token_hex(32)
+    relay = RelayManager(privkey)
+
+    print("╔══ peck minimal-tunnel — DAEMON ══╗")
+    print(f"║  npub (hex): {relay.pubkey}")
+    print(f"║  Copy this for the client!       ")
+    print("╚══════════════════════════════════╝")
+    print("\nConnecting to relays…")
+    await relay.connect()
+
+    # Wait for announce
+    print("\nWaiting for client announce…")
+    # We don't know the client pubkey yet — poll for any DM
+    client_pubkey = None
+    while client_pubkey is None:
+        for ws in relay.websockets:
+            try:
+                raw = await asyncio.wait_for(ws.receive(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            if raw.type != aiohttp.WSMsgType.TEXT:
+                continue
+            data = json.loads(raw.data)
+            if data[0] != "EVENT" or len(data) < 3:
+                continue
+            event = data[2]
+            if event.get("kind") != 4 or event.get("pubkey") == relay.pubkey:
+                continue
+            client_pubkey = event["pubkey"]
+            plaintext = _nip44_decrypt(event["content"], privkey, client_pubkey)
+            msg = json.loads(plaintext)
+            if "peerId" in msg:
+                print(f"  ← announce from {client_pubkey[:12]}… (peerId={msg['peerId'][:8]})")
+                break
+        await asyncio.sleep(0.1)
+
+    # Create WebRTC connection (daemon is the offerer)
+    pc = RTCPeerConnection(configuration=rtc_config())
+    channel = pc.createDataChannel("peck", ordered=True)
+
+    @channel.on("message")
+    def on_datachannel_message(message):
+        if isinstance(message, bytes):
+            text = message.decode("utf-8", errors="replace").strip()
+            print(f"  ← data: {text!r}")
+            if text == "ping":
+                response = b"pong"
+                channel.send(response)
+                print(f"  → sent: pong")
+        elif isinstance(message, str):
+            print(f"  ← text: {message!r}")
+            if message.strip() == "ping":
+                channel.send("pong")
+                print(f"  → sent: pong")
+
+    @pc.on("connectionstatechange")
+    async def on_state():
+        print(f"  [webrtc] state={pc.connectionState}")
+
+    # Create offer, wait for ICE gathering, send
+    print("  Gathering ICE candidates…")
+    offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    # Wait for ICE gathering to complete (non-trickle on daemon side)
+    await _wait_for_ice_gathering(pc)
+    print(f"  ✓ ICE gathering done")
+
+    await relay.send_dm(client_pubkey, {"type": "offer", "sdp": pc.localDescription.sdp})
+    print("  → offer sent")
+
+    # Wait for answer
+    answer_msg = await relay.recv_dm(client_pubkey, timeout=20.0)
+    if answer_msg.get("type") != "answer":
+        print(f"  ✗ expected answer, got: {answer_msg}")
+        return
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_msg["sdp"], type="answer"))
+    print("  ← answer applied")
+
+    # Listen for client trickle candidates
+    async def listen_candidates():
+        while True:
+            try:
+                msg = await relay.recv_dm(client_pubkey, timeout=30.0)
+                if msg.get("type") == "candidate":
+                    from aiortc.sdp import candidate_from_sdp
+                    cand = candidate_from_sdp(msg["sdp"])
+                    await pc.addIceCandidate(cand)
+                    print("  ← ICE candidate from client")
+            except (TimeoutError, asyncio.CancelledError):
+                break
+
+    cand_task = asyncio.create_task(listen_candidates())
+
+    # Keep alive until connection closes
+    print("\n  Tunnel up — waiting for ping…")
+    try:
+        while pc.connectionState not in ("closed", "failed"):
+            await asyncio.sleep(1)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        cand_task.cancel()
+        await pc.close()
+        await relay.close()
+        print("\n  Daemon shut down.")
+
+
+# ─── Client mode ─────────────────────────────────────────────────────────────
+
+async def run_client(daemon_pubkey: str):
+    """Send announce, complete WebRTC handshake, send ping over DataChannel."""
+    privkey = secrets.token_hex(32)
+    relay = RelayManager(privkey)
+    peer_id = secrets.token_hex(8)
+
+    print("╔══ peck minimal-tunnel — CLIENT ══╗")
+    print(f"║  ephemeral: {relay.pubkey[:20]}…")
+    print(f"║  daemon:    {daemon_pubkey[:20]}…")
+    print("╚══════════════════════════════════╝")
+    print("\nConnecting to relays…")
+    await relay.connect()
+
+    # Set up WebRTC (client is the answerer — receives DataChannel)
+    pc = RTCPeerConnection(configuration=rtc_config())
     channel_ready = asyncio.Event()
 
-    # The daemon creates the DataChannel (it is the offerer)
     @pc.on("datachannel")
     def on_datachannel(channel):
-        print(f"[webrtc] DataChannel received: {channel.label}")
+        print(f"  [webrtc] DataChannel: {channel.label}")
 
         @channel.on("message")
         def on_message(message):
-            if isinstance(message, bytes):
-                print(f"[channel] ← received {len(message)} bytes:")
-                print(f"           {message[:200]}")
-                channel_ready.set()
-            else:
-                print(f"[channel] ← {message}")
+            text = message.decode() if isinstance(message, bytes) else message
+            print(f"  ← received: {text!r}")
+            channel_ready.set()
 
-    # Trickle ICE — send each candidate to the daemon
     @pc.on("icecandidate")
     def on_icecandidate(event):
         if event.candidate:
-            candidate_str = event.candidate.candidate
-            asyncio.ensure_future(send_dm({"type": "candidate", "sdp": candidate_str}))
-            print(f"[ice] → candidate sent")
+            asyncio.ensure_future(
+                relay.send_dm(daemon_pubkey, {"type": "candidate", "sdp": event.candidate.candidate})
+            )
+            print("  → ICE candidate sent (trickle)")
 
-    # 4. Send announce
-    announce = {"peerId": peer_id, "type": "announce"}
-    await send_dm(announce)
-    print("[client] → announce sent")
+    @pc.on("connectionstatechange")
+    async def on_state():
+        print(f"  [webrtc] state={pc.connectionState}")
 
-    # 5. Wait for offer
-    print("[client] waiting for offer…")
-    offer_msg = await wait_for_msg(["offer", "terms-challenge"])
+    # Send announce
+    await relay.send_dm(daemon_pubkey, {"peerId": peer_id, "type": "announce"})
+    print("\n  → announce sent")
 
-    if offer_msg["type"] == "terms-challenge":
-        print(f"[terms] challenge received: {offer_msg.get('version')}")
-        await send_dm({"type": "terms-accept", "version": offer_msg["version"]})
-        print("[terms] → accepted")
-        offer_msg = await wait_for_msg(["offer"])
+    # Wait for offer
+    print("  Waiting for offer…")
+    offer_msg = await relay.recv_dm(daemon_pubkey, timeout=20.0)
+    if offer_msg.get("type") != "offer":
+        print(f"  ✗ expected offer, got: {offer_msg}")
+        return
 
-    # 6. Apply offer, create answer
-    offer = RTCSessionDescription(sdp=offer_msg["sdp"], type="offer")
-    await pc.setRemoteDescription(offer)
-    print("[webrtc] offer applied")
-
+    # Apply offer, create answer
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_msg["sdp"], type="offer"))
+    print("  ← offer applied")
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
-    print("[webrtc] answer created")
+    print("  ✓ answer created")
 
-    # 7. Send answer
-    await send_dm({"type": "answer", "sdp": pc.localDescription.sdp})
-    print("[client] → answer sent")
+    # Send answer
+    await relay.send_dm(daemon_pubkey, {"type": "answer", "sdp": pc.localDescription.sdp})
+    print("  → answer sent")
 
-    # 8. Listen for late candidates from daemon (optional, non-blocking)
-    async def listen_candidates():
-        try:
-            while True:
-                msg = await wait_for_msg(["candidate"], timeout=30.0)
-                from aiortc.sdp import candidate_from_sdp
-                cand = candidate_from_sdp(msg["sdp"])
-                await pc.addIceCandidate(cand)
-                print("[ice] ← candidate from daemon")
-        except (TimeoutError, asyncio.CancelledError):
-            pass
-
-    candidate_task = asyncio.create_task(listen_candidates())
-
-    # 9. Wait for DataChannel to open, then send an HTTP request
-    print("[client] waiting for DataChannel…")
+    # Wait for DataChannel + send ping
+    print("\n  Waiting for DataChannel…")
     try:
-        await asyncio.wait_for(channel_ready.wait(), timeout=15.0)
+        await asyncio.wait_for(channel_ready.wait(), timeout=20.0)
     except asyncio.TimeoutError:
-        # DataChannel might be open but no message yet — try sending anyway
-        pass
+        print("  ✗ DataChannel never opened")
+        await pc.close()
+        await relay.close()
+        return
 
-    # Find the DataChannel (set by on_datachannel callback)
-    for receiver in pc.getReceivers():
-        if hasattr(receiver, "transport") and receiver.transport:
+    print("\n  ═══ Tunnel established ═══")
+
+    # Get the DataChannel to send ping
+    channel = None
+    if pc.sctp and pc.sctp.transport:
+        for dc in pc.sctp.transport.dataChannels:
+            channel = dc
             break
 
-    # Send a simple HTTP GET over the DataChannel
-    channel = None
-    for ch in pc.sctp.transport.dataChannels if pc.sctp else []:
-        channel = ch
-        break
-
     if channel and channel.readyState == "open":
-        http_request = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
-        # peck binary frame: [StreamID:2][Port:2][Type:1][Payload]
-        import struct
-        frame = struct.pack(">HHB", 1, 80, 0x00) + http_request  # OPEN, port 80
-        channel.send(frame)
-        print(f"[channel] → HTTP GET sent ({len(frame)} bytes)")
-        await asyncio.sleep(3)  # wait for response
+        channel.send(b"ping")
+        print('  → sent: "ping"')
+        # Wait for pong
+        await asyncio.sleep(2)
+        print('\n  ✓ Got "pong" — tunnel works!')
     else:
-        print("[error] DataChannel not open")
+        print("  ✗ DataChannel not open")
 
-    candidate_task.cancel()
+    await asyncio.sleep(1)
     await pc.close()
-    for ws in websockets:
-        await ws.close()
-    await session.close()
-    print("[client] done")
+    await relay.close()
+    print("\n  Client shut down.")
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+async def _wait_for_ice_gathering(pc: RTCPeerConnection, timeout: float = 10.0):
+    """Wait until ICE gathering is complete."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while pc.iceGatheringState != "complete":
+        if asyncio.get_event_loop().time() > deadline:
+            break
+        await asyncio.sleep(0.2)
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python minimal-tunnel.py <daemon_npub_hex> [relay_url]")
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in ("daemon", "client"):
+        print("peck minimal tunnel — reference P2P implementation")
         print()
-        print("  daemon_npub_hex  — 64 hex char x-only pubkey (NOT npub1...)")
-        print("  relay_url        — optional, defaults to " + ", ".join(RELAYS))
+        print("Usage:")
+        print("  Terminal 1:  python minimal-tunnel.py daemon")
+        print("  Terminal 2:  python minimal-tunnel.py client <daemon_npub_hex>")
+        print()
+        print("The daemon prints its npub on startup. Copy it for the client.")
+        print()
+        print("Requirements:  pip install aiohttp aiortc coincurve")
+        print("               + daemon/nip44.py from the peck repo")
         sys.exit(1)
 
-    daemon_npub = sys.argv[1]
-    relays = [sys.argv[2]] if len(sys.argv) > 2 else None
+    mode = sys.argv[1]
+    if mode == "daemon":
+        try:
+            asyncio.run(run_daemon())
+        except KeyboardInterrupt:
+            print("\n[interrupted]")
+    elif mode == "client":
+        if len(sys.argv) < 3:
+            print("Usage: python minimal-tunnel.py client <daemon_npub_hex>")
+            sys.exit(1)
+        daemon_pubkey = sys.argv[2]
+        try:
+            asyncio.run(run_client(daemon_pubkey))
+        except KeyboardInterrupt:
+            print("\n[interrupted]")
 
-    try:
-        asyncio.run(connect(daemon_npub, relays))
-    except KeyboardInterrupt:
-        print("\n[interrupted]")
+
+if __name__ == "__main__":
+    main()
