@@ -13,9 +13,10 @@
     "build": "node build.mjs"
   },
   "dependencies": {
-    "@noble/ciphers": "2.2.0",
-    "@noble/hashes": "2.2.0",
-    "@noble/secp256k1": "3.1.0"
+    "@noble/ciphers": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "@noble/secp256k1": "^3.1.0",
+    "esbuild": "^0.25.0"
   },
   "keywords": [
     "nostr",
@@ -29,6 +30,9 @@
   "author": "nostreach",
   "license": "MIT",
   "devDependencies": {
-    "esbuild": "0.28.1"
+    "esbuild": "^0.28.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
   }
 }

@@ -15,10 +15,10 @@ ExecStartPre=+/usr/local/bin/peck-vpn-netns.sh up /etc/peck/wg/*.conf
 # ─── 2. Read WG IPs from /run/peck-wg-ips ───
 ExecStartPre=/bin/bash -c 'grep PECK_WG_IPS /run/peck-wg-ips > /run/peck-daemon.env 2>/dev/null || true'
 
-# ─── 3. Port forwarder: host:80 → namespace:10.200.200.2:80 ───
-ExecStartPre=+/bin/bash -c 'socat TCP-LISTEN:80,fork,reuseaddr TCP:10.200.200.2:80 & echo $! > /run/peck-socat.pid'
-
-# ─── 4. Daemon inside the namespace ───
+# ─── 3. Daemon inside the namespace ───
+# NOTE: no host→namespace port forwarder needed — the daemon is purely
+# WebRTC/relay-signaled and never opens a TCP listener inside the netns
+# (old spec-019 architecture did; removed 2026-08-14).
 EnvironmentFile=-/run/peck-daemon.env
 ExecStart=+/usr/bin/ip netns exec peck /opt/peck/venv/bin/python /opt/peck/daemon.py \
   --nsec-file /etc/peck/nsec \
@@ -26,7 +26,7 @@ ExecStart=+/usr/bin/ip netns exec peck /opt/peck/venv/bin/python /opt/peck/daemo
   --relays wss://relay.damus.io,wss://relay.primal.net
 
 # ─── Cleanup ───
-ExecStop=/bin/bash -c 'kill $(cat /run/peck-socat.pid 2>/dev/null) 2>/dev/null; rm -f /run/peck-socat.pid'
+# (old socat ExecStop removed with the port forwarder — see note above)
 ExecStopPost=+/usr/local/bin/peck-vpn-netns.sh down
 
 Restart=always

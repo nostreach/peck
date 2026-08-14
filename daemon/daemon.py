@@ -50,6 +50,22 @@ from ports import PortsMap, parse_path_prefix, load_ports_config, from_ports_leg
 # WireGuard management helpers (extracted from daemon.py)
 from wg_manager import get_connected_wg_ips, pick_wg_pair
 
+
+def _raddr_of(candidate_line: str) -> Optional[str]:
+    """Extract the raddr IP from an SDP a=candidate line, or None.
+
+    Format: a=candidate:<foundation> <component> udp <prio> <ip> <port> typ <type> [raddr <ip> rport <port>]
+    Spec 043: used to correlate srflx candidates with their WG base address.
+    """
+    parts = candidate_line.split()
+    try:
+        idx = parts.index("raddr")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    except ValueError:
+        pass
+    return None
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(message)s",
@@ -70,8 +86,8 @@ from protocol import (
     MSG_OPEN, MSG_DATA, MSG_CLOSE, MSG_RST, HEADER_SIZE,
     encode_frame, decode_frame,
     STATUS_TEXTS,
-    parse_http_request, compose_http_response,
-    NOT_FOUND_RESPONSE, BAD_REQUEST_RESPONSE,
+    parse_http_request, compose_http_response, sanitize_response_headers,
+    NOT_FOUND_RESPONSE, BAD_REQUEST_RESPONSE, BAD_GATEWAY_RESPONSE,
 )
 
 
@@ -111,6 +127,12 @@ class PeerSession:
         self.route_table = route_table
         # Spec 029: optional PortsMap + back-reference to daemon for hot-reload
         self._daemon = daemon
+        # Spec 043: ICE gathering runs under the daemon-global gather lock —
+        # aioice reads the monkey-patched get_host_addresses at gather time
+        # (inside create_offer), several awaits AFTER setup() set it, so
+        # concurrent sessions could otherwise gather with each other's
+        # WG addresses. daemon=None (unit tests) gets a private lock.
+        self._gather_lock = daemon._gather_lock if daemon is not None else asyncio.Lock()
         self.pc: Optional[RTCPeerConnection] = None
         self.channel = None
         self.created_at = time.time()
@@ -214,12 +236,6 @@ class PeerSession:
             self._arm_idle_timer()
 
     async def setup(self):
-        # Collect host addresses — IPv4 + IPv6 (if configured)
-        host_addrs = [self.wg_ip]
-        if self.wg_ip6:
-            host_addrs.append(self.wg_ip6)
-        aioice.ice.get_host_addresses = lambda use_ipv4, use_ipv6: host_addrs
-
         from aiortc import RTCConfiguration, RTCIceServer
         config = RTCConfiguration(iceServers=[
             RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
@@ -330,9 +346,20 @@ class PeerSession:
         return None
 
     async def create_offer(self) -> dict:
-        offer = await self.pc.createOffer()
-        await self.pc.setLocalDescription(offer)
-        await self._wait_for_ice_gathering()
+        # Spec 043: patch + gather + filter must be one atomic section.
+        # aioice reads the module-global get_host_addresses during gathering,
+        # so the patch is applied as late as possible (here) and the whole
+        # gather runs under the daemon-global lock — concurrent sessions
+        # can no longer gather with each other's WG addresses.
+        host_addrs = [self.wg_ip]
+        if self.wg_ip6:
+            host_addrs.append(self.wg_ip6)
+
+        async with self._gather_lock:
+            aioice.ice.get_host_addresses = lambda use_ipv4, use_ipv6: host_addrs
+            offer = await self.pc.createOffer()
+            await self.pc.setLocalDescription(offer)
+            await self._wait_for_ice_gathering()
 
         # Inject IPv6 srflx candidate if we resolved a public IPv6 exit.
         # aioice doesn't do STUN for IPv6, so we add it manually.
@@ -385,8 +412,15 @@ class PeerSession:
 
             if ip in allowed_ips:
                 filtered.append(line)
-            elif cand_type == "srflx":
-                # STUN reflexive — always allow (needed for NAT traversal)
+            elif cand_type == "srflx" and _raddr_of(line) in allowed_ips:
+                # STUN reflexive whose base address is one of our WG IPs —
+                # allow (needed for NAT traversal). Spec 043 hardening:
+                # correlated via raddr instead of blanket-allowing all srflx.
+                filtered.append(line)
+            elif cand_type == "srflx" and _raddr_of(line) is None:
+                # No raddr to correlate (e.g. manually injected IPv6 srflx
+                # from _resolve_ipv6_srflx) — allow, the public IP itself
+                # is already in allowed_ips in that case.
                 filtered.append(line)
             else:
                 removed += 1
@@ -552,14 +586,19 @@ class PeerSession:
                 allow_redirects=False,
             ) as resp:
                 body_bytes = await resp.read()
-                resp_headers = {k: v for k, v in resp.headers.items()}
+                # Spec 044: strip hop-by-hop + topology headers before the
+                # response enters the tunnel; keep duplicates as pairs.
+                resp_headers = sanitize_response_headers(resp.headers.items())
                 raw_response = compose_http_response(resp.status, resp_headers, body_bytes)
                 self._send(encode_frame(stream_id, port, MSG_DATA, raw_response))
                 self._send(encode_frame(stream_id, port, MSG_CLOSE))
         except Exception as e:
             log.error(f"proxy error: {e}")
-            err_msg = str(e).encode("latin1")
-            self._send(encode_frame(stream_id, port, MSG_RST, err_msg))
+            # Serve a static 502 page instead of a bare RST: the tunnel
+            # works, the backend is down. No backend details leak to the
+            # client (the exception message may contain internal IPs).
+            self._send(encode_frame(stream_id, port, MSG_DATA, BAD_GATEWAY_RESPONSE))
+            self._send(encode_frame(stream_id, port, MSG_CLOSE))
         finally:
             self.streams.pop(stream_id, None)
 
@@ -742,6 +781,9 @@ class PeckDaemon:
         self.relay_price = relay_price  # sat/min, 0 = free
         self.pending_requests: dict = {}  # {requester_npub: target_npub}
         self.bridges: dict = {}  # {npub_a: npub_b} bidirectional
+        # Spec 043: daemon-global lock serializing ICE gathering across all
+        # sessions (see PeerSession.__init__ / create_offer)
+        self._gather_lock = asyncio.Lock()
 
         mode_label = " [RELAY MODE]" if relay_mode else ""
         price_label = f" ({relay_price} sat/min)" if relay_price > 0 else " (free)" if relay_mode else ""

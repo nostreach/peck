@@ -372,6 +372,11 @@ No runtime CDN dependencies. All cryptographic code is self-hosted.
 - **nsec isolation**: The private key is never embedded in DOM attributes. Copy/Reveal operations read from JS closures, preventing exfiltration via `querySelector`.
 - Peck settings are stored in cookies (cross-subdomain) and localStorage. The CSP prevents tunneled scripts from exfiltrating data to external endpoints.
 
+**Daemon-side leak prevention**:
+- **No IP disclosure on backend failure**: When the backend is unreachable, the daemon serves a static 502 error page through the tunnel. The exception text (which may contain internal backend addresses) never reaches the client — it is logged server-side only.
+- **Response header sanitizer**: Hop-by-hop headers (`Connection`, `Keep-Alive`, `Upgrade`, …) and internal-topology headers set by reverse proxies or load balancers (`X-Forwarded-For`, `Via`, `X-Real-IP`, `X-Backend-Server`, `X-Upstream-*`, …) are stripped from backend responses before they enter the tunnel. Site headers (`Server`, `X-Powered-By`, CSP, cookies) pass through unchanged. Duplicate headers (e.g. multiple `Set-Cookie`) are preserved.
+- **ICE candidate filtering**: The daemon offers only ICE candidates bound to its configured WireGuard interfaces. Host candidates are filtered against the session's selected tunnel addresses, and srflx candidates are correlated via their base (`raddr`) address — a candidate discovered on any other interface cannot enter the offer. ICE gathering is serialized under a daemon-global lock so concurrent sessions cannot gather with each other's tunnel addresses.
+
 **Future hardening options** (not yet implemented):
 - **iframe sandbox**: Render tunneled content in a sandboxed `<iframe>` with `sandbox="allow-scripts"` (no `allow-same-origin`). The iframe runs in a null origin — no access to parent cookies or sessionStorage. Requires a `postMessage` bridge for the tunnel transport.
 - **Double-reverse-proxy**: Instead of injecting HTML into the peck client DOM, serve the tunneled content as a standalone document. The peck client acts as a transparent proxy at the HTTP level. Larger architectural change but eliminates same-origin exposure entirely.

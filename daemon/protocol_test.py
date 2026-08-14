@@ -12,7 +12,7 @@ from protocol import (
     HEADER_SIZE,
     encode_frame, decode_frame,
     parse_http_request, compose_http_response,
-    NOT_FOUND_RESPONSE, BAD_REQUEST_RESPONSE,
+    NOT_FOUND_RESPONSE, BAD_REQUEST_RESPONSE, BAD_GATEWAY_RESPONSE,
 )
 
 PASS = 0
@@ -177,6 +177,74 @@ def test_constant_error_responses():
     from protocol import _404_BODY, _404_HEADERS
     expected = compose_http_response(404, _404_HEADERS, _404_BODY)
     check(NOT_FOUND_RESPONSE == expected, "404 is deterministic")
+    # 502 — backend unreachable page
+    check(b"HTTP/1.1 502" in BAD_GATEWAY_RESPONSE, "502 status line")
+    check(b"text/html" in BAD_GATEWAY_RESPONSE, "502 is HTML")
+    check(b"Backend unreachable" in BAD_GATEWAY_RESPONSE, "502 title")
+    # No internal backend details must leak into the 502 page
+    check(b"10.200.200" not in BAD_GATEWAY_RESPONSE, "502 leaks no backend IP")
+    check(b"127.0.0" not in BAD_GATEWAY_RESPONSE, "502 leaks no loopback IP")
+    check(b"localhost" not in BAD_GATEWAY_RESPONSE, "502 leaks no localhost")
+    from protocol import _502_BODY, _502_HEADERS
+    check(BAD_GATEWAY_RESPONSE == compose_http_response(502, _502_HEADERS, _502_BODY),
+          "502 is deterministic")
+    check(str(len(_502_BODY)) in BAD_GATEWAY_RESPONSE.decode("latin1"),
+          "502 content-length matches body")
+
+
+def test_sanitize_response_headers():
+    print("── response header sanitizer (Spec 044) ──")
+    from protocol import sanitize_response_headers, HOP_BY_HOP_HEADERS, TOPOLOGY_HEADERS
+
+    # Mapping input — hop-by-hop and topology headers removed
+    dirty = {
+        "Content-Type": "text/html",
+        "Connection": "keep-alive",
+        "Keep-Alive": "timeout=5",
+        "Upgrade": "websocket",
+        "Via": "1.1 internal-lb (nginx)",
+        "X-Forwarded-For": "10.200.200.1",
+        "X-Real-IP": "10.0.0.x",
+        "X-Backend-Server": "web01.internal",
+        "X-Powered-By": "Express",
+        "Server": "nginx",
+        "CSP": "default-src 'self'",
+    }
+    out = sanitize_response_headers(dirty)
+    keys = [k.lower() for k, v in out]
+    check("content-type" in keys, "Content-Type survives")
+    check("server" in keys and "x-powered-by" in keys, "site fingerprint headers pass through")
+    check("csp" in keys, "custom/site headers pass through")
+    for h in ("connection", "keep-alive", "upgrade", "via", "x-forwarded-for",
+              "x-real-ip", "x-backend-server"):
+        check(h not in keys, f"{h} stripped")
+
+    # Pair-list input — duplicates preserved
+    pairs = [
+        ("Set-Cookie", "a=1; Path=/"),
+        ("Set-Cookie", "b=2; Path=/"),
+        ("X-Forwarded-For", "10.0.0.1"),
+        ("Content-Type", "text/html"),
+    ]
+    out2 = sanitize_response_headers(pairs)
+    cookies = [v for k, v in out2 if k.lower() == "set-cookie"]
+    check(len(cookies) == 2, "duplicate Set-Cookie preserved as pairs")
+    check(all("x-forwarded-for" != k.lower() for k, v in out2), "topology stripped from pairs")
+
+    # Case-insensitivity
+    out3 = sanitize_response_headers({"x-FORWARDED-FOR": "1.2.3.4", "Via": "x"})
+    check(out3 == [], "stripping is case-insensitive")
+
+    # compose_http_response accepts pair lists end-to-end
+    raw = compose_http_response(200, out2, b"<html></html>")
+    head = raw.split(b"\r\n\r\n", 1)[0].decode("latin1")
+    check(head.count("Set-Cookie:") == 2, "both Set-Cookie headers serialized")
+    check("X-Forwarded-For" not in head, "no topology header in wire output")
+
+    # Every listed constant is actually enforced
+    probe = {h.title().replace("-", "-"): "x" for h in HOP_BY_HOP_HEADERS | TOPOLOGY_HEADERS}
+    out4 = sanitize_response_headers(probe)
+    check(out4 == [], f"all {len(probe)} listed headers stripped")
 
 
 if __name__ == "__main__":
@@ -197,6 +265,7 @@ if __name__ == "__main__":
     test_compose_adds_content_length_if_missing()
     test_compose_doesnt_double_content_length()
     test_constant_error_responses()
+    test_sanitize_response_headers()
 
     print(f"\n{'='*40}")
     print(f"protocol tests: {PASS} passed, {FAIL} failed")

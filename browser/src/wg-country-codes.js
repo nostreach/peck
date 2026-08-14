@@ -4,7 +4,7 @@
  * Single-layer lookup via geoip2-ipv4 (MaxMind GeoLite2-derived) dataset.
  * ~560k CIDR entries covering all global IPv4. Binary search, fully offline.
  *
- * Source: https://github.com/datasets/geoip2-ipv4 (same as peck's EU geo-check)
+ * Source: https://github.com/datasets/geoip2-ipv4 (same as server's EU geo-check)
  * No external API calls, no CORS, no tracking.
  *
  * geoip-data.js (~2.5MB gzipped) is loaded lazily on first lookup.

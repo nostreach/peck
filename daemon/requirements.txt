@@ -8,11 +8,11 @@
 #   python3 -m venv venv && source venv/bin/activate
 #   pip install -r requirements.txt
 
-aiortc==1.15.0
-aiohttp==3.14.1
-aioice==0.10.2
-coincurve==21.0.0
-pyyaml==6.0.3
+aiortc>=1.6.0
+aiohttp>=3.9.0
+aioice>=2.2.0
+coincurve>=20.0.0
+pyyaml>=6.0
 
 # Optional: GeoIP support (country/region/ASN rules)
-# geoip2==5.3.0
+# geoip2>=4.7.0
