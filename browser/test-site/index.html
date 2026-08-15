@@ -3,64 +3,69 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1117">
+  <meta name="theme-color" content="#0a0908">
   <title>peck · tunnel test</title>
+  <link rel="icon" href="./assets/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./assets/style.css">
 </head>
 <body>
-  <div class="container">
+  <div class="wrap">
+
+    <div class="sysbar">
+      <span><b class="sys-key">peck</b> · tunnel test site</span>
+      <span>every byte on this page crossed the <span class="st">p2p datachannel</span></span>
+    </div>
 
     <header class="hero">
       <img src="./assets/logo.svg" alt="peck" class="hero-logo">
-      <h1>peck tunnel</h1>
-      <p>You're viewing this page through a Nostr-signaled WebRTC tunnel. Every byte — HTML, CSS, JS, the image above — flowed through an encrypted peer-to-peer DataChannel.</p>
+      <div class="logo">peck<span class="cursor"></span></div>
+      <h1 class="hero-title">tunnel <em class="accent">test</em> site</h1>
+      <p class="sub">You're viewing this page through a Nostr-signaled WebRTC tunnel. Every byte — HTML, CSS, JS — flowed through an encrypted peer-to-peer DataChannel.</p>
     </header>
 
-    <nav>
-      <a href="./">Home</a>
-      <a href="./about">About</a>
-      <a href="./links">Links</a>
-      <a href="./form">Form</a>
-      <a href="./redirect">Redirect</a>
-      <a href="./missing">404</a>
+    <nav class="mainnav" aria-label="Test pages">
+      <a class="nav-link" href="./" aria-current="page">home</a>
+      <a class="nav-link" href="./about">about</a>
+      <a class="nav-link" href="./links">links</a>
+      <a class="nav-link" href="./form">form</a>
+      <a class="nav-link" href="./redirect">redirect</a>
+      <a class="nav-link" href="./missing">404</a>
     </nav>
 
-    <main>
+    <main class="main-area">
 
       <section class="card">
-        <h2>Live JavaScript</h2>
-        <p>The clock below updates every second via JS loaded through the tunnel:</p>
-        <p style="font-size:1.2rem;margin-top:8px"><span id="clock">—</span></p>
-        <p style="margin-top:16px">Fetch test — runs an HTTP request through the tunnel:</p>
-        <button id="btn-fetch">GET /api/time</button>
-        <pre id="fetch-result">click the button ↑</pre>
+        <h2 class="card-title">live clock</h2>
+        <div class="clock" id="clock">--:--:--</div>
+        <div class="clock-label">updated every second via js through the tunnel</div>
+        <button id="btn-fetch" type="button">fetch ./api/time</button>
+        <pre id="fetch-result" class="term">click the button ↑</pre>
       </section>
 
       <section class="card">
-        <h2>Link Navigation</h2>
-        <p>Tap any link in the nav above. You should stay on this page (no full reload), the URL bar should update, and the back button should work. If you see a blank page or a full reload, that's a bug.</p>
+        <h2 class="card-title">link navigation</h2>
+        <p class="card-text">Tap any link in the nav above. You should stay on this page (no full reload), the URL bar should update, and the back button should work. If you see a blank page or a full reload, that's a bug.</p>
       </section>
 
       <section class="card">
-        <h2>Asset Loading</h2>
+        <h2 class="card-title">asset loading</h2>
         <div class="img-test">
-          <img src="./assets/logo.svg" alt="logo">
-          <div>
-            <p>The logo, this page's CSS, and the JS that powers the clock were all fetched as separate tunnel requests.</p>
-            <p>If this page is styled and the clock ticks, asset loading works. ✅</p>
-          </div>
+          <img src="./assets/logo.svg" alt="peck logo via relative path" class="img-thumb">
+          <img src="/assets/logo.svg" alt="peck logo via root-relative path" class="img-thumb">
+          <p class="card-text">This page's CSS, JS, and both logos were fetched as separate tunnel requests — one relative, one root-relative. If the page is styled, the clock ticks, and both birds show up, asset loading works.</p>
         </div>
       </section>
 
       <details>
-        <summary>Large content test (100 paragraphs)</summary>
-        <p id="lorem"></p>
+        <summary class="disc-sum">large content test (100 paragraphs)</summary>
+        <div class="disc-body" id="lorem"></div>
       </details>
 
     </main>
 
-    <footer>
-      <p>Served through <strong>peck</strong> — <a href="https://github.com/nousresearch/peck">Nostr-signaled WebRTC tunnel</a></p>
+    <footer class="statusline">
+      <span><span class="dot">●</span> peck://tunnel · p2p · e2e encrypted</span>
+      <span><a class="foot-link" href="https://github.com/nostreach/peck">github.com/nostreach/peck</a></span>
     </footer>
 
   </div>

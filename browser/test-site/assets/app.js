@@ -1,4 +1,7 @@
-// Live clock
+// peck test-site — page scripts
+// Clock, fetch probe, large-content generator.
+
+// Live clock — proves JS executes through the tunnel
 function tick() {
   const el = document.getElementById('clock')
   if (el) el.textContent = new Date().toLocaleTimeString()
@@ -6,14 +9,18 @@ function tick() {
 tick()
 setInterval(tick, 1000)
 
-// Fetch /api/time
+// Fetch test — HTTP request through the tunnel
 document.getElementById('btn-fetch')?.addEventListener('click', async () => {
   const pre = document.getElementById('fetch-result')
-  pre.textContent = 'fetching...'
+  pre.textContent = 'fetching ./api/time ...'
   try {
+    const t0 = performance.now()
     const res = await fetch('./api/time')
     const data = await res.json()
-    pre.textContent = JSON.stringify(data, null, 2)
+    const ms = Math.round(performance.now() - t0)
+    pre.textContent =
+      `GET ./api/time → ${res.status} ${res.statusText || 'OK'} (${ms} ms)\n` +
+      JSON.stringify(data, null, 2)
   } catch (err) {
     pre.textContent = 'Error: ' + err.message
   }

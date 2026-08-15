@@ -3,62 +3,69 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1117">
+  <meta name="theme-color" content="#0a0908">
   <title>About · peck</title>
+  <link rel="icon" href="./assets/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./assets/style.css">
 </head>
 <body>
-  <div class="container">
+  <div class="wrap">
+
+    <div class="sysbar">
+      <span><b class="sys-key">peck</b> · tunnel test site</span>
+      <span>every byte on this page crossed the <span class="st">p2p datachannel</span></span>
+    </div>
 
     <header class="hero">
       <img src="./assets/logo.svg" alt="peck" class="hero-logo">
-      <h1>about peck</h1>
-      <p>A Nostr-signaled WebRTC hole-punching tunnel protocol.</p>
+      <div class="logo">peck<span class="cursor"></span></div>
+      <h1 class="hero-title">about the <em class="accent">tests</em></h1>
+      <p class="sub">What this site exercises, and how the tunnel underneath it works.</p>
     </header>
 
-    <nav>
-      <a href="./">Home</a>
-      <a href="./about">About</a>
-      <a href="./links">Links</a>
-      <a href="./form">Form</a>
-      <a href="./redirect">Redirect</a>
-      <a href="./missing">404</a>
+    <nav class="mainnav" aria-label="Test pages">
+      <a class="nav-link" href="./">home</a>
+      <a class="nav-link" href="./about" aria-current="page">about</a>
+      <a class="nav-link" href="./links">links</a>
+      <a class="nav-link" href="./form">form</a>
+      <a class="nav-link" href="./redirect">redirect</a>
+      <a class="nav-link" href="./missing">404</a>
     </nav>
 
-    <main>
+    <main class="main-area">
 
       <section class="card">
-        <h2>What this site tests</h2>
-        <p>This test site exercises the peck tunnel with the following:</p>
-        <ul style="margin: 12px 0 0 20px; color: var(--text-muted); line-height: 1.9">
+        <h2 class="card-title">what this site tests</h2>
+        <ul class="card-list">
           <li>Multiple HTML pages with in-page navigation</li>
           <li>External CSS and JS assets</li>
           <li>Inline images (SVG)</li>
           <li>JSON API endpoint</li>
-          <li>Form POST submission</li>
+          <li>Form POST and GET submissions</li>
           <li>HTTP 302 redirect</li>
           <li>Custom 404 error page</li>
           <li>Large content (100 paragraphs of lorem ipsum)</li>
         </ul>
-        <p style="margin-top: 16px">If you can navigate between pages, submit the form, and see the clock ticking on the home page, the tunnel handles real web traffic correctly.</p>
+        <p class="card-text">If you can navigate between pages, submit the form, and see the clock ticking on the home page, the tunnel handles real web traffic correctly.</p>
       </section>
 
       <section class="card">
-        <h2>How peck works</h2>
-        <ol style="margin: 12px 0 0 20px; color: var(--text-muted); line-height: 1.9">
-          <li>Browser generates ephemeral Nostr keypair</li>
-          <li>Browser publishes encrypted DM (NIP-04) to Nostr relay</li>
-          <li>Daemon receives DM, responds with WebRTC SDP offer</li>
-          <li>Browser and daemon exchange ICE candidates</li>
-          <li>WebRTC peer connection established (hole-punched through NAT)</li>
-          <li>HTTP requests multiplexed over DataChannel</li>
+        <h2 class="card-title">how peck works</h2>
+        <ol class="card-list">
+          <li>Browser generates an ephemeral Nostr keypair</li>
+          <li>Browser publishes an encrypted NIP-44 DM to a Nostr relay</li>
+          <li>Daemon receives the DM and answers with a WebRTC SDP offer</li>
+          <li>Both sides exchange ICE candidates</li>
+          <li>WebRTC peer connection is established (NAT hole-punched)</li>
+          <li>HTTP requests are multiplexed over the DataChannel</li>
         </ol>
       </section>
 
     </main>
 
-    <footer>
-      <p>Served through <strong>peck</strong> — Nostr-signaled WebRTC tunnel</p>
+    <footer class="statusline">
+      <span><span class="dot">●</span> peck://tunnel · p2p · e2e encrypted</span>
+      <span><a class="foot-link" href="https://github.com/nostreach/peck">github.com/nostreach/peck</a></span>
     </footer>
 
   </div>

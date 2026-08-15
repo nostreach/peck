@@ -2017,30 +2017,32 @@
             const cssUrl = new URL(href, window.location.origin + backendPath)
             const cssRes = await tunnel.request({ port: currentPort || defaultPort, method: 'GET', path: cssUrl.pathname })
             // Rewrite CSS selectors to scope under #tunneled-content so they
-            // don't leak into the peck host UI. The old approach (only body→#tunneled-content)
-            // let `header`, `nav`, `main`, `footer` rules hit the peck host's
-            // own elements and produced broken layouts.
+            // don't leak into the peck host UI. Spec 046: use :where() so the
+            // scoping adds ZERO specificity — a tunneled page's own class
+            // rules (0,1,0) must keep beating its reset (`*`), otherwise
+            // every reset-based site loses centering/padding in the tunnel.
             let cssText = new TextDecoder().decode(cssRes.body)
             // Scope universal selectors first (before we mangle the bare tag names)
-            cssText = cssText.replace(/^(\s*)\*/gm, '$1#tunneled-content *')
+            cssText = cssText.replace(/^(\s*)\*/gm, '$1:where(#tunneled-content) *')
             // Bare tag selectors that conflict with peck host UI → scope them.
             // Only match selectors that start at line, comma, brace, or whitespace
             // boundaries — NOT inside compound selectors like .card-header.
             const scopeTags = ['html', 'body', 'header', 'nav', 'main', 'footer', 'section', 'article', 'aside']
             for (const tag of scopeTags) {
               // (^|[,>+~\s]) tag (\s*[,{>+~])
-              const re = new RegExp(`(^|[,>+~\\s])${tag}(?=[\\s,>+~{])`, 'gm')
-              cssText = cssText.replace(re, '$1#tunneled-content')
+              const re = new RegExp(`(^|[,>+~\\s])${tag}(?=[\\s,+~{])`, 'gm')
+              cssText = cssText.replace(re, '$1:where(#tunneled-content)')
             }
             // Scope remaining bare element selectors (button, input, a, h1-h6, p,
             // table, img, etc.) that would leak into peck UI. We prepend
-            // #tunneled-content to any selector that is a bare tag name at the
-            // start of a selector list, so `button { ... }` becomes
-            // `#tunneled-content button { ... }`.
+            // :where(#tunneled-content) to any selector that is a bare tag name
+            // at the start of a selector list, so `button { ... }` becomes
+            // `:where(#tunneled-content) button { ... }` (0,0,1 — same
+            // specificity as plain `button`, host sheet loses on order).
             const bareTags = ['a','b','bdi','bdo','blockquote','br','button','caption','cite','code','col','colgroup','dd','del','details','dfn','dialog','dl','dt','em','fieldset','figcaption','figure','form','h1','h2','h3','h4','h5','h6','hr','i','iframe','img','input','ins','kbd','label','legend','li','mark','menu','ol','optgroup','option','output','p','pre','progress','q','samp','select','small','span','strong','sub','summary','sup','table','tbody','td','textarea','tfoot','th','thead','time','tr','u','ul','var','video']
             for (const tag of bareTags) {
               // Match bare tag as first selector in a rule or after comma
-              cssText = cssText.replace(new RegExp(`(^|[},\\s])${tag}(?=[\\s.,:>+~{[])`, 'gm'), '$1#tunneled-content ' + tag)
+              cssText = cssText.replace(new RegExp(`(^|[},\\s])${tag}(?=[\\s.,:>+~{[])`, 'gm'), '$1:where(#tunneled-content) ' + tag)
             }
             const style = document.createElement('style')
             style.textContent = cssText
@@ -2220,11 +2222,18 @@
             const cssUrl = new URL(href, window.location.origin + action)
             const cssRes = await tunnel.request({ port: currentPort || defaultPort, method: 'GET', path: cssUrl.pathname })
             let cssText = new TextDecoder().decode(cssRes.body)
-            cssText = cssText.replace(/\bbody\b/g, '#tunneled-content')
-            cssText = cssText.replace(/^(\s*)\*/gm, '$1#tunneled-content *')
+            // Spec 046: same :where()-based scoping as navigate() — zero
+            // specificity boost, and no \bbody\b global replace (that also
+            // mangled compound selectors like .card-body).
+            cssText = cssText.replace(/^(\s*)\*/gm, '$1:where(#tunneled-content) *')
+            const scopeTags2 = ['html', 'body', 'header', 'nav', 'main', 'footer', 'section', 'article', 'aside']
+            for (const tag of scopeTags2) {
+              const re = new RegExp(`(^|[,>+~\\s])${tag}(?=[\\s,+~{])`, 'gm')
+              cssText = cssText.replace(re, '$1:where(#tunneled-content)')
+            }
             const bareTags2 = ['a','b','bdi','bdo','blockquote','br','button','caption','cite','code','col','colgroup','dd','del','details','dfn','dialog','dl','dt','em','fieldset','figcaption','figure','form','h1','h2','h3','h4','h5','h6','hr','i','iframe','img','input','ins','kbd','label','legend','li','mark','menu','ol','optgroup','option','output','p','pre','progress','q','samp','select','small','span','strong','sub','summary','sup','table','tbody','td','textarea','tfoot','th','thead','time','tr','u','ul','var','video']
             for (const tag of bareTags2) {
-              cssText = cssText.replace(new RegExp(`(^|[},\\s])${tag}(?=[\\s.,:>+~{[])`, 'gm'), '$1#tunneled-content ' + tag)
+              cssText = cssText.replace(new RegExp(`(^|[},\\s])${tag}(?=[\\s.,:>+~{[])`, 'gm'), '$1:where(#tunneled-content) ' + tag)
             }
             const style = document.createElement('style')
             style.textContent = cssText

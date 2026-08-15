@@ -3,90 +3,73 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1117">
+  <meta name="theme-color" content="#0a0908">
   <title>Links · peck</title>
+  <link rel="icon" href="./assets/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./assets/style.css">
-  <style>
-    .link-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    .link-table th,
-    .link-table td { padding: 12px; text-align: left; }
-    .link-table thead th {
-      color: var(--text-muted);
-      font-size: 0.85rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      border-bottom: 1px solid var(--border);
-    }
-    .link-table tbody tr { border-bottom: 1px solid var(--bg-hover); }
-    .link-table tbody tr:last-child { border-bottom: none; }
-    .link-table a { color: var(--accent); }
-    .badge {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 12px;
-      font-size: 0.8rem;
-      font-weight: 500;
-    }
-    .badge-ok { background: rgba(63,185,80,0.15); color: var(--success); }
-    .badge-warn { background: rgba(248,81,73,0.15); color: var(--error); }
-  </style>
 </head>
 <body>
-  <div class="container">
+  <div class="wrap">
+
+    <div class="sysbar">
+      <span><b class="sys-key">peck</b> · tunnel test site</span>
+      <span>every byte on this page crossed the <span class="st">p2p datachannel</span></span>
+    </div>
 
     <header class="hero">
       <img src="./assets/logo.svg" alt="peck" class="hero-logo">
-      <h1>link tests</h1>
-      <p>Different URL patterns exercise the tunnel's path resolution.</p>
+      <div class="logo">peck<span class="cursor"></span></div>
+      <h1 class="hero-title">link <em class="accent">tests</em></h1>
+      <p class="sub">Different URL patterns exercise the tunnel's path resolution.</p>
     </header>
 
-    <nav>
-      <a href="./">Home</a>
-      <a href="./about">About</a>
-      <a href="./links">Links</a>
-      <a href="./form">Form</a>
-      <a href="./redirect">Redirect</a>
-      <a href="./missing">404</a>
+    <nav class="mainnav" aria-label="Test pages">
+      <a class="nav-link" href="./">home</a>
+      <a class="nav-link" href="./about">about</a>
+      <a class="nav-link" href="./links" aria-current="page">links</a>
+      <a class="nav-link" href="./form">form</a>
+      <a class="nav-link" href="./redirect">redirect</a>
+      <a class="nav-link" href="./missing">404</a>
     </nav>
 
-    <main>
+    <main class="main-area">
 
       <section class="card">
-        <h2>Link types</h2>
-        <p>Each row tests a different URL resolution pattern:</p>
-        <table class="link-table">
+        <h2 class="card-title">link types</h2>
+        <p class="card-text">Each row tests a different URL resolution pattern:</p>
+        <table class="tbl">
           <thead>
-            <tr><th>Link</th><th>Type</th><th>Expected</th></tr>
+            <tr><th>link</th><th>type</th><th>expected</th></tr>
           </thead>
           <tbody>
             <tr>
-              <td><a href="./about">./about</a></td>
-              <td style="color: var(--text-muted)">Relative</td>
+              <td><a class="lnk" href="./about">./about</a></td>
+              <td>relative</td>
               <td><span class="badge badge-ok">within tunnel</span></td>
             </tr>
             <tr>
-              <td><a href="/about">/about</a></td>
-              <td style="color: var(--text-muted)">Root-relative</td>
+              <td><a class="lnk" href="/about">/about</a></td>
+              <td>root-relative</td>
               <td><span class="badge badge-ok">within tunnel</span></td>
             </tr>
             <tr>
-              <td><a href="./assets/style.css">./assets/style.css</a></td>
-              <td style="color: var(--text-muted)">Asset</td>
-              <td><span class="badge badge-ok">raw CSS</span></td>
+              <td><a class="lnk" href="./assets/style.css">./assets/style.css</a></td>
+              <td>asset</td>
+              <td><span class="badge badge-ok">raw css</span></td>
             </tr>
             <tr>
-              <td><a href="./api/time">./api/time</a></td>
-              <td style="color: var(--text-muted)">API (JSON)</td>
-              <td><span class="badge badge-ok">JSON response</span></td>
+              <td><a class="lnk" href="./api/time">./api/time</a></td>
+              <td>api</td>
+              <td><span class="badge badge-ok">json response</span></td>
             </tr>
             <tr>
-              <td><a href="https://example.com">example.com</a></td>
-              <td style="color: var(--text-muted)">External</td>
+              <td><a class="lnk" href="https://example.com">example.com</a></td>
+              <td>external</td>
               <td><span class="badge badge-warn">outside tunnel</span></td>
             </tr>
             <tr>
-              <td><a href="mailto:test@peck.local">mailto:</a></td>
-              <td style="color: var(--text-muted)">Protocol</td>
+              <td><a class="lnk" href="mailto:test@peck.local">mailto:</a></td>
+              <td>protocol</td>
               <td><span class="badge badge-warn">opens mail client</span></td>
             </tr>
           </tbody>
@@ -94,18 +77,19 @@
       </section>
 
       <section class="card">
-        <h2>Image sources</h2>
+        <h2 class="card-title">image sources</h2>
         <div class="img-test">
-          <img src="./assets/logo.svg" alt="logo">
-          <img src="/assets/logo.svg" alt="logo">
+          <img src="./assets/logo.svg" alt="logo via relative path" class="img-thumb">
+          <img src="/assets/logo.svg" alt="logo via root-relative path" class="img-thumb">
+          <p class="card-text">Both birds above loaded through the tunnel — one via relative path, one via root-relative.</p>
         </div>
-        <p style="margin-top: 12px; color: var(--text-muted)">Both logos above loaded through the tunnel — one via relative path, one via root-relative.</p>
       </section>
 
     </main>
 
-    <footer>
-      <p>Served through <strong>peck</strong> — Nostr-signaled WebRTC tunnel</p>
+    <footer class="statusline">
+      <span><span class="dot">●</span> peck://tunnel · p2p · e2e encrypted</span>
+      <span><a class="foot-link" href="https://github.com/nostreach/peck">github.com/nostreach/peck</a></span>
     </footer>
 
   </div>
